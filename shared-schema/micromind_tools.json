@@ -1,0 +1,276 @@
+{
+  "version": 1,
+  "execution": {
+    "where": "roshetta-server",
+    "identity": "the signed-in user token of the chat request; the model never sees or sends a token",
+    "isolation": "pharmacy_id comes from the token, never from model arguments",
+    "model_returns": "tool name plus arguments only",
+    "results_to_model": "minimum text needed; keys in never_return_keys removed",
+    "max_tool_calls_per_message": 3
+  },
+  "never_return_keys": [
+    "phone",
+    "pin",
+    "token",
+    "password",
+    "email",
+    "birth_date",
+    "photo",
+    "confirmed_by_name",
+    "created_by",
+    "paid_by",
+    "user_id",
+    "unit_buy_price",
+    "unit_cost",
+    "profit",
+    "gross_profit",
+    "notes"
+  ],
+  "denied_argument_names": [
+    "pharmacy_id",
+    "user_id",
+    "token",
+    "authorization",
+    "role",
+    "scope",
+    "scopes",
+    "confirmed",
+    "created_by",
+    "confirmed_by"
+  ],
+  "tools": [
+    {
+      "name": "search_inventory",
+      "kind": "read",
+      "method": "GET",
+      "path": "/api/inventory/items",
+      "requires_scope": "view_inventory",
+      "summary": "List Inventory",
+      "parameters": [
+        {
+          "name": "search",
+          "in": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "category",
+          "in": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "match_product",
+      "kind": "read",
+      "method": "POST",
+      "path": "/api/inventory/match",
+      "requires_scope": "view_inventory",
+      "summary": "Match Product",
+      "parameters": [],
+      "body": {
+        "properties": {
+          "query_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query_name"
+        ]
+      }
+    },
+    {
+      "name": "get_item_batches",
+      "kind": "read",
+      "method": "GET",
+      "path": "/api/inventory/items/{item_id}/batches",
+      "requires_scope": "view_inventory",
+      "summary": "Get Inventory Item Batches",
+      "parameters": [
+        {
+          "name": "item_id",
+          "in": "path",
+          "required": true,
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "name": "list_ledger_entries",
+      "kind": "read",
+      "method": "GET",
+      "path": "/api/ledger/entries",
+      "requires_scope": "view_reports",
+      "summary": "List Recent Entries",
+      "parameters": [
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "type": "integer",
+          "default": 20
+        },
+        {
+          "name": "offset",
+          "in": "query",
+          "required": false,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000,
+          "default": 0
+        },
+        {
+          "name": "entry_type",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "enum": [
+            "log_sale",
+            "log_expense",
+            "log_restock"
+          ]
+        },
+        {
+          "name": "day",
+          "in": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "start_day",
+          "in": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "end_day",
+          "in": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "list_supplier_payables",
+      "kind": "read",
+      "method": "GET",
+      "path": "/api/ledger/payables",
+      "requires_scope": "view_reports",
+      "summary": "List Payables",
+      "parameters": [
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        },
+        {
+          "name": "offset",
+          "in": "query",
+          "required": false,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000,
+          "default": 0
+        },
+        {
+          "name": "status",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "enum": [
+            "unpaid",
+            "partly_paid",
+            "paid"
+          ]
+        },
+        {
+          "name": "start_day",
+          "in": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "end_day",
+          "in": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "get_payables_summary",
+      "kind": "read",
+      "method": "GET",
+      "path": "/api/ledger/payables/summary",
+      "requires_scope": "view_reports",
+      "summary": "Payables Summary",
+      "parameters": [
+        {
+          "name": "start_day",
+          "in": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "end_day",
+          "in": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "get_my_activity",
+      "kind": "read",
+      "method": "GET",
+      "path": "/api/me/activity",
+      "requires_scope": null,
+      "summary": "Get My Activity",
+      "parameters": [
+        {
+          "name": "period",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "default": "day"
+        }
+      ]
+    }
+  ],
+  "proposals": [
+    {
+      "intent": "log_sale",
+      "kind": "proposal_only",
+      "runs": "local agents pipeline (agents/), not an HTTP tool",
+      "description": "Propose a sale. Stock and price are checked locally.",
+      "confirmation": "human confirms in the app; only then data changes"
+    },
+    {
+      "intent": "log_restock",
+      "kind": "proposal_only",
+      "runs": "local agents pipeline (agents/), not an HTTP tool",
+      "description": "Propose a restock of an existing product.",
+      "confirmation": "human confirms in the app; only then data changes"
+    },
+    {
+      "intent": "log_expense",
+      "kind": "proposal_only",
+      "runs": "local agents pipeline (agents/), not an HTTP tool",
+      "description": "Propose an expense entry.",
+      "confirmation": "human confirms in the app; only then data changes"
+    }
+  ],
+  "forbidden_path_prefixes": [
+    "/api/auth",
+    "/api/pharmacies",
+    "/api/staff",
+    "/api/ocr",
+    "/api/actions",
+    "/api/ledger/entries/{entry_id}/settlements"
+  ]
+}

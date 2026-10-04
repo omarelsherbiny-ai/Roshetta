@@ -1,0 +1,559 @@
+// web/src/app/page.tsx (route: / — dashboard: today's totals, activity, pending prescriptions, quick actions, recent transactions)
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { TopHeader } from '@/components/ui/TopHeader';
+import { BottomNav } from '@/components/ui/BottomNav';
+import { LoginModal } from '@/components/auth/LoginModal';
+import { getFinancialSummary, getRecentEntries, getRecentActivity, getPharmacyProfile, getLowStockItems, getPrescriptionsList } from '@/lib/api';
+import { FinancialSummary, PharmacyProfile } from '@/types';
+import { isAuthenticated, parseToken } from '@/lib/auth';
+import { useLanguage } from '@/lib/i18n';
+import { localeOf, pickLocalizedName } from '@/lib/languages';
+import { formatDateTime } from '@/lib/utils';
+
+export default function DashboardPage() {
+  const router = useRouter();
+  const { t, lang } = useLanguage();
+  const locale = localeOf(lang);
+
+  // User & Auth State
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [pharmacy, setPharmacy] = useState<PharmacyProfile | null>(null);
+  const [userRole, setUserRole] = useState<string | null>(null);
+  const [isLoginOpen, setIsLoginOpen] = useState(false);
+
+  // Live Ledger & Metrics
+  const [financials, setFinancials] = useState<FinancialSummary>({
+    date: new Date().toISOString().split('T')[0],
+    total_sales: 0,
+    total_expenses: 0,
+    cost_of_goods: null,
+    gross_profit: null,
+    net_profit: 0,
+    profit_complete: false,
+    sales_count: 0,
+    expenses_count: 0,
+  });
+  const [financialsLoaded, setFinancialsLoaded] = useState(false);
+  const [dashboardLoadError, setDashboardLoadError] = useState(false);
+  const [profileLoadError, setProfileLoadError] = useState(false);
+  const [recentEntries, setRecentEntries] = useState<any[]>([]);
+  const [entriesLoading, setEntriesLoading] = useState(true);
+  const [entriesLoadError, setEntriesLoadError] = useState(false);
+  const [recentActivity, setRecentActivity] = useState<any[]>([]);
+  const [lowStockItems, setLowStockItems] = useState<any[]>([]);
+  const [prescriptions, setPrescriptions] = useState<any[]>([]);
+  const [quickInput, setQuickInput] = useState('');
+  const [isListening, setIsListening] = useState(false);
+
+  // Currency string based on profile
+  const currencySymbol = pharmacy?.currency === 'SAR' ? t.hm_currency_sar : t.currency;
+
+  useEffect(() => {
+    const authContext = parseToken();
+    if (sessionStorage.getItem('roshetta_role') === 'account' || authContext?.pharmacyId === null) {
+      router.replace('/pharmacies');
+      return;
+    }
+
+    // Check if token exists in session
+    const savedUser = sessionStorage.getItem('roshetta_user');
+    const savedRole = sessionStorage.getItem('roshetta_role');
+    const savedPharm = sessionStorage.getItem('roshetta_pharmacy');
+
+    if (savedUser && savedRole) {
+      try {
+        setCurrentUser(JSON.parse(savedUser));
+        setUserRole(savedRole);
+        if (savedPharm) setPharmacy(JSON.parse(savedPharm));
+        loadDashboardData();
+      } catch (e) {
+        router.replace('/onboarding');
+        return;
+      }
+    } else if (!isAuthenticated()) {
+      // No valid token → send to onboarding/login
+      router.replace('/onboarding');
+      return;
+    } else {
+      // Token exists but user objects not yet populated (e.g. tab refresh) — try to reload
+      fetchProfile();
+      loadDashboardData();
+    }
+  }, []);
+
+  const fetchProfile = async () => {
+    try {
+      const p = await getPharmacyProfile();
+      setPharmacy(p);
+      setProfileLoadError(false);
+    } catch {
+      setProfileLoadError(true);
+    }
+  };
+
+  const loadDashboardData = async () => {
+    setDashboardLoadError(false);
+    setFinancialsLoaded(false);
+    setEntriesLoading(true);
+    setEntriesLoadError(false);
+    const results = await Promise.allSettled([
+      getFinancialSummary(),
+      getRecentEntries(5),
+      getLowStockItems(),
+      getPrescriptionsList(),
+    ]);
+    let failed = false;
+    const [financeResult, entriesResult, stockResult, prescriptionsResult] = results;
+    if (financeResult.status === 'fulfilled') {
+      setFinancials(financeResult.value);
+      setFinancialsLoaded(true);
+    } else failed = true;
+    if (entriesResult.status === 'fulfilled') setRecentEntries(entriesResult.value);
+    else { setRecentEntries([]); setEntriesLoadError(true); failed = true; }
+    setEntriesLoading(false);
+    if (stockResult.status === 'fulfilled') setLowStockItems(stockResult.value);
+    else { setLowStockItems([]); failed = true; }
+    if (prescriptionsResult.status === 'fulfilled') setPrescriptions(prescriptionsResult.value);
+    else { setPrescriptions([]); failed = true; }
+
+    const role = sessionStorage.getItem('roshetta_role');
+    if (role === 'owner' || role === 'pharmacist') {
+      try {
+        setRecentActivity(await getRecentActivity(5));
+      } catch {
+        setRecentActivity([]);
+        failed = true;
+      }
+    }
+    setDashboardLoadError(failed);
+  };
+
+  const pendingPrescriptions = prescriptions.filter((record) =>
+    !record.review_decision && ['pending_review', 'critical_alert'].includes(record.safety_status)
+  );
+
+  const activityLabel = (event: any) => {
+    const type = event.action_type === 'CONFIRM_ACTION'
+      ? event.details?.entry_type
+      : event.action_type;
+    const labels: Record<string, string> = {
+      log_sale: t.hm_act_log_sale,
+      log_expense: t.hm_act_log_expense,
+      log_restock: t.hm_act_log_restock,
+      INVITE_STAFF: t.hm_act_invite_staff,
+      UPDATE_STAFF_ROLE: t.hm_act_update_staff_role,
+      REMOVE_STAFF: t.hm_act_remove_staff,
+      CREATE_PRODUCT: t.hm_act_create_product,
+      UPDATE_PRODUCT: t.hm_act_update_product,
+      CANCEL_ACTION: t.hm_act_cancel_action,
+    };
+    return labels[type] ?? t.hm_activity_title;
+  };
+
+  const roleLabel =
+    userRole === 'owner' ? t.hm_role_owner
+    : userRole === 'pharmacist' ? t.pharmacist
+    : userRole === 'viewer' ? t.viewer
+    : userRole === 'cashier' ? t.cashier
+    : t.hm_role_member;
+
+  const handleLoginSuccess = (user: any, pharm: PharmacyProfile, token: string, role: string) => {
+    sessionStorage.setItem('roshetta_token', token);
+    sessionStorage.setItem('roshetta_user', JSON.stringify(user));
+    sessionStorage.setItem('roshetta_role', role);
+    sessionStorage.setItem('roshetta_pharmacy', JSON.stringify(pharm));
+    setCurrentUser(user);
+    setPharmacy(pharm);
+    setUserRole(role);
+    setIsLoginOpen(false);
+    loadDashboardData();
+  };
+
+  const handleQuickSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickInput.trim()) return;
+    router.push(`/assistant?prompt=${encodeURIComponent(quickInput.trim())}`);
+  };
+
+  const handleVoiceInput = () => {
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+      alert(t.hm_voice_unsupported);
+      return;
+    }
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.lang = locale;
+    recognition.interimResults = false;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    recognition.onerror = () => setIsListening(false);
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      setQuickInput(transcript);
+      router.push(`/assistant?prompt=${encodeURIComponent(transcript)}`);
+    };
+
+    recognition.start();
+  };
+
+  return (
+    <div className="flex flex-col min-h-screen bg-surface text-on-surface">
+      {/* Top Header */}
+      <TopHeader
+        pharmacyName={pharmacy?.pharmacy_name || undefined}
+        subtitle={t.hm_dashboard}
+      />
+
+      {/* Main Dashboard Content */}
+      <main className="flex-1 flex flex-col relative w-full pt-16 pb-28 bg-surface">
+        <div className="flex flex-col w-full px-margin-mobile pb-space-lg gap-space-md">
+
+          {(dashboardLoadError || profileLoadError) && (
+            <div role="alert" className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-error-container p-3 text-sm text-error">
+              <span>{t.hm_load_error}</span>
+              <button type="button" onClick={() => { if (profileLoadError) void fetchProfile(); void loadDashboardData(); }} className="min-h-10 shrink-0 rounded-lg px-3 font-semibold underline">
+                {t.retry}
+              </button>
+            </div>
+          )}
+
+          {/* ── Greeting & Shift Card ── */}
+          <section className="bg-surface-container-lowest rounded-xl p-space-md shadow-sm relative overflow-hidden mt-3">
+            <div className="flex items-center justify-between gap-space-sm relative z-10">
+              <div className="flex items-center gap-space-sm min-w-0">
+                <div className="w-12 h-12 rounded-full bg-surface-container flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-primary text-[28px] icon-filled">
+                    medical_services
+                  </span>
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <h2 className="font-headline-sm text-headline-sm text-on-surface truncate">
+                    {t.hm_hello}{currentUser?.name ? ` ${currentUser.name}` : ''} 👋
+                  </h2>
+                  <p className="font-body-sm text-body-sm text-on-surface-variant truncate">
+                    {roleLabel} • {pharmacy?.pharmacy_name || (profileLoadError ? t.hm_pharmacy_unavailable : '—')}
+                  </p>
+                </div>
+              </div>
+
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-container-low shrink-0">
+                <span className="w-2 h-2 rounded-full bg-primary animate-ping" />
+                <span className="font-label-sm text-label-sm text-primary font-medium">{t.hm_badge}</span>
+              </div>
+            </div>
+
+            <div className="mt-space-sm pt-space-xs flex items-center justify-between bg-surface-container-low rounded-lg p-2.5">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-primary text-[20px]">auto_awesome</span>
+                <span className="font-body-sm text-body-sm text-on-surface">
+                  {financialsLoaded ? t.hm_sales_today.replace('{count}', String(financials.sales_count)) : '—'}
+                </span>
+              </div>
+              <Link href="/records" className="font-label-sm text-label-sm text-primary font-bold">
+                {t.hm_details}
+              </Link>
+            </div>
+          </section>
+
+          {/* ── 3 Metric Cards ── */}
+          <section className="w-full">
+            <div className="grid grid-cols-3 gap-2">
+              {/* Sales Card */}
+              <div className="bg-surface-container-lowest rounded-xl p-3 shadow-sm flex flex-col justify-between">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-label-sm text-label-sm text-on-surface-variant">{t.sales}</span>
+                  <div className="w-6 h-6 rounded-full bg-surface-container flex items-center justify-center">
+                    <span className="material-symbols-outlined text-primary text-[14px]">point_of_sale</span>
+                  </div>
+                </div>
+                <div className="flex flex-col">
+                  <span className="font-headline-sm text-headline-sm text-on-surface leading-tight font-bold">
+                    {financialsLoaded ? financials.total_sales.toLocaleString(locale) : '—'}
+                  </span>
+                  <div className="flex items-center gap-0.5 mt-0.5">
+                    <span className="font-label-sm text-label-sm text-on-surface-variant">{t.hm_today}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Expenses Card */}
+              <div className="bg-surface-container-lowest rounded-xl p-3 shadow-sm flex flex-col justify-between">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-label-sm text-label-sm text-on-surface-variant">{t.expenses}</span>
+                  <div className="w-6 h-6 rounded-full bg-surface-container flex items-center justify-center">
+                    <span className="material-symbols-outlined text-tertiary text-[14px]">receipt</span>
+                  </div>
+                </div>
+                <div className="flex flex-col">
+                  <span className="font-headline-sm text-headline-sm text-on-surface leading-tight font-bold">
+                    {financialsLoaded ? financials.total_expenses.toLocaleString(locale) : '—'}
+                  </span>
+                  <span className="font-label-sm text-label-sm text-on-surface-variant truncate">{t.hm_expenses_restocks}</span>
+                </div>
+              </div>
+
+              {/* Net Profit Card */}
+              <div className="bg-primary-container text-on-primary-container rounded-xl p-3 shadow-sm flex flex-col justify-between">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-label-sm text-label-sm text-primary-fixed">{t.net_profit}</span>
+                  <div className="w-6 h-6 rounded-full bg-primary flex items-center justify-center">
+                    <span className="material-symbols-outlined text-primary-fixed text-[14px]">savings</span>
+                  </div>
+                </div>
+                <div className="flex flex-col">
+                  <span className="font-headline-sm text-headline-sm text-on-primary leading-tight font-bold">
+                    {!financialsLoaded || financials.net_profit === null ? '—' : financials.net_profit.toLocaleString(locale)}
+                  </span>
+                  <span className="font-label-sm text-label-sm text-primary-fixed-dim">{currencySymbol}</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {recentActivity.length > 0 && (
+            <section className="flex flex-col gap-space-xs">
+              <div className="flex items-center gap-1.5 px-1">
+                <span className="material-symbols-outlined text-primary text-[20px]">group</span>
+                <h3 className="font-headline-sm text-headline-sm text-on-surface">{t.hm_activity_title}</h3>
+              </div>
+              <div className="flex flex-col gap-2">
+                {recentActivity.map((event) => (
+                  <div key={event.id} className="bg-surface-container-lowest rounded-xl p-space-sm shadow-sm flex items-center justify-between gap-space-sm">
+                    <div className="min-w-0">
+                      <span className="block font-label-lg text-label-lg text-on-surface truncate">{event.user_name || t.hm_team_member}</span>
+                      <span className="block font-body-sm text-body-sm text-on-surface-variant truncate">{activityLabel(event)}</span>
+                    </div>
+                    <time className="font-label-sm text-label-sm text-on-surface-variant shrink-0">
+                      {event.timestamp ? new Date(event.timestamp).toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' }) : ''}
+                    </time>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Pending prescriptions are shown only when backed by a saved record. */}
+          {pendingPrescriptions.length > 0 && <section className="bg-surface-container-lowest rounded-xl p-space-md shadow-sm relative overflow-hidden">
+            <div className="flex items-start justify-between gap-space-sm">
+              <div className="flex items-center gap-space-xs">
+                <div className="w-8 h-8 rounded-full bg-secondary-fixed flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-secondary text-[20px] icon-filled">
+                    pending_actions
+                  </span>
+                </div>
+                <div className="flex flex-col">
+                  <div className="flex items-center gap-1.5">
+                    <h3 className="font-label-lg text-label-lg text-on-surface font-bold">{t.hm_rx_title}</h3>
+                    <span className="w-5 h-5 rounded-full bg-secondary text-on-secondary font-label-sm text-label-sm flex items-center justify-center font-bold">
+                      {pendingPrescriptions.length}
+                    </span>
+                  </div>
+                  <span className="font-body-sm text-body-sm text-on-surface-variant">{t.hm_rx_subtitle}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-space-sm bg-surface-container-low rounded-lg p-space-sm flex items-center justify-between gap-space-sm">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-10 h-10 rounded-lg bg-surface-container-highest flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-primary text-[22px]">prescriptions</span>
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <span className="font-label-md text-label-md text-on-surface truncate">{pendingPrescriptions[0].patient_name || pendingPrescriptions[0].doctor_name || t.hm_rx_default_name}</span>
+                  <span className="font-body-sm text-body-sm text-on-surface-variant truncate">{pendingPrescriptions[0].safety_status === 'critical_alert' ? t.hm_rx_alert : t.hm_rx_pending}</span>
+                </div>
+              </div>
+              <Link
+                href="/prescriptions"
+                className="h-10 px-3 bg-secondary text-on-secondary rounded-lg font-label-md text-label-md flex items-center justify-center gap-1 shrink-0 active:scale-95 transition-transform"
+              >
+                <span>{t.hm_review}</span>
+                <span className="material-symbols-outlined text-[16px]">chevron_left</span>
+              </Link>
+            </div>
+          </section>}
+
+          {/* ── Instant Quick Actions ── */}
+          <section className="flex flex-col gap-space-sm">
+            <h3 className="font-headline-sm text-headline-sm text-on-surface">{t.hm_quick_actions}</h3>
+
+            {/* Big Camera / OCR Button */}
+            <Link
+              href="/scan"
+              className="w-full bg-primary text-on-primary rounded-xl p-space-md shadow-md flex items-center justify-between gap-space-md active:scale-[0.99] transition-transform text-start"
+            >
+              <div className="flex items-center gap-space-sm min-w-0">
+                <div className="w-12 h-12 rounded-xl bg-primary-container text-on-primary-container flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-[28px] icon-filled">
+                    document_scanner
+                  </span>
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-headline-sm text-headline-sm text-on-primary">{t.hm_scan_title}</span>
+                    <span className="material-symbols-outlined text-secondary-fixed text-[18px]">bolt</span>
+                  </div>
+                  <p className="font-body-sm text-body-sm text-primary-fixed-dim truncate">{t.hm_scan_unavailable}</p>
+                </div>
+              </div>
+              <div className="w-9 h-9 rounded-full bg-primary-container flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-on-primary text-[20px]">arrow_forward</span>
+              </div>
+            </Link>
+
+            {/* Voice & Text Quick Box */}
+            <div className="bg-surface-container-lowest rounded-xl p-space-md shadow-sm flex flex-col gap-space-sm">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center">
+                    <span className="material-symbols-outlined text-primary text-[20px]">mic</span>
+                  </div>
+                  <span className="font-label-lg text-label-lg text-on-surface font-bold">{t.hm_quick_box_title}</span>
+                </div>
+                <span className="font-label-sm text-label-sm text-primary bg-surface-container-low px-2 py-0.5 rounded-full font-bold">
+                  {t.hm_quick_badge}
+                </span>
+              </div>
+
+              <form onSubmit={handleQuickSubmit} className="relative flex items-center">
+                <input
+                  type="text"
+                  value={quickInput}
+                  onChange={(e) => setQuickInput(e.target.value)}
+                  placeholder={t.hm_quick_placeholder}
+                  className="w-full bg-surface-container-low text-on-surface rounded-lg py-3 ps-10 pe-12 font-body-sm text-body-sm outline-none placeholder:text-on-surface-variant focus:bg-surface-container transition-colors"
+                />
+                <span className="material-symbols-outlined absolute start-3 text-on-surface-variant text-[20px]">search</span>
+                <button
+                  type="button"
+                  aria-label={t.hm_voice_label}
+                  onClick={handleVoiceInput}
+                  className={`absolute left-2 w-8 h-8 rounded-full flex items-center justify-center transition-all ${
+                    isListening ? 'bg-error text-on-error animate-pulse' : 'bg-primary text-on-primary active:scale-90'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[18px]">keyboard_voice</span>
+                </button>
+              </form>
+
+              {/* Example requests */}
+              <div className="flex items-center gap-1.5 overflow-x-auto py-1 no-scrollbar">
+                <span className="font-label-sm text-label-sm text-on-surface-variant shrink-0">{t.hm_examples}</span>
+                {[
+                  t.hm_ex_low_stock,
+                  t.hm_ex_sales,
+                  t.hm_ex_expenses,
+                ].map((chip) => (
+                  <button
+                    key={chip}
+                    type="button"
+                    onClick={() => {
+                      setQuickInput(chip);
+                      router.push(`/assistant?prompt=${encodeURIComponent(chip)}`);
+                    }}
+                    className="font-label-sm text-label-sm bg-surface-container text-on-surface px-2.5 py-1 rounded-full shrink-0 active:bg-surface-container-high transition-colors"
+                  >
+                    {chip}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          {/* ── Recent Activities List ── */}
+          <section className="flex flex-col gap-space-xs">
+            <div className="flex items-center justify-between px-1">
+              <div className="flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-primary text-[20px]">history</span>
+                <h3 className="font-headline-sm text-headline-sm text-on-surface">{t.hm_recent_title}</h3>
+              </div>
+              <Link href="/records" className="font-label-md text-label-md text-primary font-bold flex items-center gap-0.5">
+                <span>{t.hm_view_all}</span>
+                <span className="material-symbols-outlined text-[14px]">chevron_left</span>
+              </Link>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              {entriesLoading ? (
+                <div aria-live="polite" className="text-center p-6 bg-surface-container-lowest rounded-xl text-on-surface-variant">
+                  {t.hm_entries_loading}
+                </div>
+              ) : entriesLoadError ? (
+                <div role="alert" className="text-center p-6 bg-surface-container-lowest rounded-xl text-error">
+                  {t.hm_entries_error}
+                </div>
+              ) : recentEntries.length > 0 ? (
+                recentEntries.map((item) => (
+                  <div
+                    key={item.id}
+                    className="bg-surface-container-lowest rounded-xl p-space-sm shadow-sm flex items-center justify-between gap-space-sm"
+                  >
+                    <div className="flex items-center gap-space-sm min-w-0">
+                      <div className="w-10 h-10 rounded-full bg-surface-container-low flex items-center justify-center shrink-0">
+                        <span className={`material-symbols-outlined text-[20px] ${item.entry_type === 'log_sale' ? 'text-primary' : 'text-secondary'}`}>
+                          {item.entry_type === 'log_sale' ? 'shopping_cart_checkout' : 'local_shipping'}
+                        </span>
+                      </div>
+                      <div className="flex flex-col min-w-0">
+                        <span className="font-label-lg text-label-lg text-on-surface truncate">
+                          {item.items?.[0]?.item_name ? `${item.items[0].item_name} × ${item.items[0].quantity}` : (item.notes || t.hm_recorded_tx)}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <span className="font-body-sm text-body-sm text-on-surface-variant">
+                            {item.entry_type === 'log_sale' ? t.hm_type_sale : item.entry_type === 'log_restock' ? t.hm_type_restock : t.hm_type_expense}
+                          </span>
+                          <span className="text-outline-variant">•</span>
+                          <span className="font-label-sm text-label-sm text-on-surface-variant">{formatDateTime(item.confirmed_at ?? item.created_at, lang)}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-end shrink-0">
+                      <span className={`font-label-lg text-label-lg font-bold font-stat-numeric ${item.entry_type === 'log_sale' ? 'text-on-surface' : 'text-tertiary'}`}>
+                        {item.total_amount} {currencySymbol}
+                      </span>
+                      <span className={`font-label-sm text-label-sm ${item.entry_type === 'log_sale' ? 'text-primary' : 'text-on-surface-variant'}`}>
+                        {item.entry_type === 'log_sale' ? t.hm_status_sale : item.entry_type === 'log_restock' ? t.hm_status_restock : t.hm_status_expense}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-center p-6 bg-surface-container-lowest rounded-xl text-on-surface-variant">
+                  {t.hm_no_entries}
+                </div>
+              )}
+
+              {lowStockItems.map((item) => (
+                <div key={item.id} className="bg-surface-container-lowest rounded-xl p-space-sm shadow-sm flex items-center justify-between gap-space-sm relative overflow-hidden">
+                  <div className="min-w-0">
+                    <span className="font-label-lg text-label-lg text-on-surface truncate block">{pickLocalizedName(lang, item.name_ar, item.name_en)}</span>
+                    <span className="font-body-sm text-body-sm text-error font-bold">{t.hm_in_stock.replace('{count}', String(item.stock_qty))}</span>
+                  </div>
+                  <Link href="/inventory" className="h-8 px-2.5 bg-surface-container text-on-surface rounded-lg font-label-sm text-label-sm flex items-center justify-center shrink-0">
+                    {t.inventory}
+                  </Link>
+                </div>
+              ))}
+            </div>
+          </section>
+
+        </div>
+      </main>
+
+      {/* Fixed Bottom Navigation */}
+      <BottomNav />
+
+      {/* Login / Switch User Modal */}
+      <LoginModal
+        isOpen={isLoginOpen}
+        onSuccess={handleLoginSuccess}
+        language={lang}
+      />
+    </div>
+  );
+}

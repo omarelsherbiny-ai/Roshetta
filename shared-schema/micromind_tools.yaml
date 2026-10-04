@@ -1,0 +1,187 @@
+# shared-schema/aimicromind_openapi.yaml
+# Derived from shared-schema/micromind_tools.yaml (7 read tools). Replace the servers url with your PUBLIC https API origin.
+# Auth is NOT in this file: the tool code adds the Bearer token from $vars.ROSHETTA_TOKEN.
+openapi: 3.0.3
+info:
+  title: Roshetta Pharmacy (read-only)
+  version: 1.0.0
+servers:
+  - url: https://YOUR-PUBLIC-API-HOST
+paths:
+  /api/inventory/items:
+    get:
+      operationId: search_inventory
+      summary: List Inventory
+      description: List Inventory (read-only).
+      responses:
+        "200":
+          description: OK
+      parameters:
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: category
+          in: query
+          required: false
+          schema:
+            type: string
+  /api/inventory/match:
+    post:
+      operationId: match_product
+      summary: Match Product
+      description: Match Product (read-only).
+      responses:
+        "200":
+          description: OK
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query_name:
+                  type: string
+              required:
+                - query_name
+  /api/inventory/items/{item_id}/batches:
+    get:
+      operationId: get_item_batches
+      summary: Get Inventory Item Batches
+      description: Get Inventory Item Batches (read-only).
+      responses:
+        "200":
+          description: OK
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: integer
+  /api/ledger/entries:
+    get:
+      operationId: list_ledger_entries
+      summary: List Recent Entries
+      description: List Recent Entries (read-only).
+      responses:
+        "200":
+          description: OK
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100000
+            default: 0
+        - name: entry_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - log_sale
+              - log_expense
+              - log_restock
+        - name: day
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: start_day
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: end_day
+          in: query
+          required: false
+          schema:
+            type: string
+  /api/ledger/payables:
+    get:
+      operationId: list_supplier_payables
+      summary: List Payables
+      description: List Payables (read-only).
+      responses:
+        "200":
+          description: OK
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100000
+            default: 0
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - unpaid
+              - partly_paid
+              - paid
+        - name: start_day
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: end_day
+          in: query
+          required: false
+          schema:
+            type: string
+  /api/ledger/payables/summary:
+    get:
+      operationId: get_payables_summary
+      summary: Payables Summary
+      description: Payables Summary (read-only).
+      responses:
+        "200":
+          description: OK
+      parameters:
+        - name: start_day
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: end_day
+          in: query
+          required: false
+          schema:
+            type: string
+  /api/me/activity:
+    get:
+      operationId: get_my_activity
+      summary: Get My Activity
+      description: Get My Activity (read-only).
+      responses:
+        "200":
+          description: OK
+      parameters:
+        - name: period
+          in: query
+          required: false
+          schema:
+            type: string
+            default: day

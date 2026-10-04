@@ -1,0 +1,478 @@
+
+=== server/app/services/ai_tools.py ===
+# server/app/services/ai_tools.py
+"""
+Runs the read tools that MicroMind may ask for, through the app's own endpoints.
+
+The model supplies only a tool name and arguments. Every call is made in-process
+against the FastAPI app with the signed-in user's own Authorization header, so
+token checks, scopes and pharmacy isolation run exactly as for the browser. The
+endpoint, not this module, decides what the user may see.
+
+What this module adds on top:
+  - only tools listed in shared-schema/micromind_tools.json can run;
+  - only the arguments declared there are accepted (never pharmacy_id, user_id,
+    a token, a role or a scope), with types, enums and limits checked;
+  - at most `max_tool_calls_per_message` calls per executor;
+  - results are filtered before any text goes back to the model: sensitive keys
+    removed, phone-like numbers, IDs and emails scrubbed, size capped;
+  - model-caused problems come back as {"ok": False, "error": ...} with a fixed
+    message (endpoint error details are never forwarded).
+"""
+import json
+from pathlib import Path
+from typing import Any, Optional
+from urllib.parse import quote
+
+import httpx
+
+from server.app.services.scrub import scrub_for_external
+
+MANIFEST_PATH = Path(__file__).resolve().parents[3] / "shared-schema" / "micromind_tools.json"
+INTERNAL_BASE_URL = "http://roshetta.internal"
+CALL_TIMEOUT_SECONDS = 10.0
+MAX_RESULT_ITEMS = 25
+MAX_RESULT_CHARS = 8000
+MAX_STRING_CHARS = 300
+MAX_ARGUMENT_STRING_CHARS = 200
+
+_STATUS_MESSAGES = {
+    401: "Authentication failed.",
+    403: "This account is not allowed to use this tool.",
+    404: "Nothing found.",
+    409: "No pharmacy is selected for this session.",
+    422: "The arguments were not valid for this tool.",
+}
+
+_manifest_cache: Optional[dict] = None
+
+
+def load_manifest(path: Optional[Path] = None) -> dict:
+    """Read the generated manifest (cached for the default path)."""
+    global _manifest_cache
+    if path is None:
+        if _manifest_cache is None:
+            _manifest_cache = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        return _manifest_cache
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _is_sensitive_key(key: str, never_keys: set) -> bool:
+    lowered = str(key).lower()
+    return lowered in never_keys or "profit" in lowered
+
+
+def filter_result(value: Any, never_keys: set) -> tuple:
+    """Return (filtered value, truncated flag). Pure function, no I/O."""
+    truncated = False
+
+    def walk(node: Any) -> Any:
+        nonlocal truncated
+        if isinstance(node, dict):
+            return {k: walk(v) for k, v in node.items() if not _is_sensitive_key(k, never_keys)}
+        if isinstance(node, list):
+            if len(node) > MAX_RESULT_ITEMS:
+                truncated = True
+            return [walk(v) for v in node[:MAX_RESULT_ITEMS]]
+        if isinstance(node, str):
+            text = scrub_for_external(node)
+            if len(text) > MAX_STRING_CHARS:
+                truncated = True
+                text = text[:MAX_STRING_CHARS]
+            return text
+        return node
+
+    return walk(value), truncated
+
+
+def _fail(message: str) -> dict:
+    return {"ok": False, "error": message}
+
+
+def _coerce(value: Any, spec: dict) -> Any:
+    """Check one argument against its declared type and limits; raise ValueError."""
+    kind = spec.get("type", "string")
+    if kind == "integer":
+        if isinstance(value, bool):
+            raise ValueError
+        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            value = int(value)
+        if not isinstance(value, int):
+            raise ValueError
+    elif kind == "number":
+        if isinstance(value, bool):
+            raise ValueError
+        if isinstance(value, str):
+            value = float(value)
+        if not isinstance(value, (int, float)):
+            raise ValueError
+    elif kind == "boolean":
+        if not isinstance(value, bool):
+            raise ValueError
+    elif kind == "string":
+        if not isinstance(value, str):
+            raise ValueError
+        limit = min(spec.get("maxLength", MAX_ARGUMENT_STRING_CHARS), MAX_ARGUMENT_STRING_CHARS)
+        if len(value) > limit:
+            raise ValueError
+    else:
+        raise ValueError  # objects and arrays are not accepted as arguments
+    if "enum" in spec and value not in spec["enum"]:
+        raise ValueError
+    if kind in ("integer", "number"):
+        if "minimum" in spec and value < spec["minimum"]:
+            raise ValueError
+        if "maximum" in spec and value > spec["maximum"]:
+            raise ValueError
+    return value
+
+
+class AiToolExecutor:
+    """One executor per chat message: it owns the call counter."""
+
+    def __init__(self, app: Any, authorization: Optional[str], manifest: Optional[dict] = None):
+        self.app = app
+        self.authorization = authorization
+        self.manifest = manifest if manifest is not None else load_manifest()
+        self.calls = 0
+        self._tools = {t["name"]: t for t in self.manifest["tools"]}
+        self._never_keys = {k.lower() for k in self.manifest["never_return_keys"]}
+        self._denied = {n.lower() for n in self.manifest.get("denied_argument_names", [])}
+        self._forbidden = list(self.manifest.get("forbidden_path_prefixes", []))
+        self._max_calls = int(self.manifest["execution"]["max_tool_calls_per_message"])
+
+    def tool_names(self) -> list:
+        return list(self._tools)
+
+    def _build_request(self, tool: dict, arguments: dict) -> tuple:
+        """Validate arguments; return (path, query, body). Raises ValueError."""
+        declared = {p["name"]: p for p in tool.get("parameters", [])}
+        body_spec = tool.get("body")
+        for key in arguments:
+            if str(key).lower() in self._denied:
+                raise ValueError
+            if key not in declared and not (key == "body" and body_spec):
+                raise ValueError
+
+        path = tool["path"]
+        query: dict = {}
+        for name, spec in declared.items():
+            if name not in arguments or arguments[name] is None:
+                if spec.get("required"):
+                    raise ValueError
+                continue
+            value = _coerce(arguments[name], spec)
+            if spec["in"] == "path":
+                path = path.replace("{" + name + "}", quote(str(value), safe=""))
+            else:
+                query[name] = value
+
+        body = None
+        if body_spec is not None:
+            raw_body = arguments.get("body")
+            if not isinstance(raw_body, dict):
+                raise ValueError
+            body = {}
+            for key, value in raw_body.items():
+                if str(key).lower() in self._denied or key not in body_spec["properties"]:
+                    raise ValueError
+                body[key] = _coerce(value, body_spec["properties"][key])
+            if any(r not in body for r in body_spec.get("required", [])):
+                raise ValueError
+        if "{" in path:
+            raise ValueError
+        return path, query, body
+
+    async def call(self, name: Any, arguments: Any) -> dict:
+        if self.calls >= self._max_calls:
+            return _fail("Tool call limit reached for this message.")
+        self.calls += 1
+
+        tool = self._tools.get(name) if isinstance(name, str) else None
+        if tool is None or tool.get("kind") != "read" or tool.get("method") not in ("GET", "POST"):
+            return _fail("Unknown tool.")
+        if any(tool["path"].startswith(prefix) for prefix in self._forbidden):
+            return _fail("Unknown tool.")
+        if not self.authorization:
+            return _fail("Authentication required.")
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            return _fail(_STATUS_MESSAGES[422])
+        try:
+            path, query, body = self._build_request(tool, arguments)
+        except (ValueError, TypeError):
+            return _fail(_STATUS_MESSAGES[422])
+
+        try:
+            transport = httpx.ASGITransport(app=self.app, raise_app_exceptions=False)
+            async with httpx.AsyncClient(
+                transport=transport, base_url=INTERNAL_BASE_URL, timeout=CALL_TIMEOUT_SECONDS
+            ) as client:
+                response = await client.request(
+                    tool["method"],
+                    path,
+                    params=query or None,
+                    json=body,
+                    headers={"Authorization": self.authorization},
+                )
+        except Exception:
+            return _fail("The tool is unavailable right now.")
+
+        if response.status_code != 200:
+            return _fail(_STATUS_MESSAGES.get(response.status_code, "The tool request failed."))
+        try:
+            payload = response.json()
+        except ValueError:
+            return _fail("The tool request failed.")
+
+        data, truncated = filter_result(payload, self._never_keys)
+        if len(json.dumps(data, ensure_ascii=False)) > MAX_RESULT_CHARS:
+            return _fail("The result is too large; ask for something narrower.")
+        return {"ok": True, "data": data, "truncated": truncated}
+=== server/app/services/security.py ===
+# server/app/services/security.py
+"""Authentication primitives for access tokens and local PIN credentials."""
+
+import base64
+import hashlib
+import hmac
+import json
+import secrets
+import time
+
+from fastapi import HTTPException
+
+from server.app.config import settings
+
+
+TOKEN_VERSION = "rsh1"
+TOKEN_TTL_SECONDS = 60 * 60 * 12
+# Tokens handed to the external AI flow: valid only for the /ai tools, a few minutes long.
+AI_TOKEN_AUDIENCE = "ai"
+AI_TOKEN_TTL_SECONDS = 5 * 60
+AI_TOKEN_MAX_TTL_SECONDS = 10 * 60
+PIN_HASH_ITERATIONS = 310_000
+_INSECURE_EXAMPLE_SECRETS = {
+    "roshetta_pharmacy_secret_key_development_mode_only",
+    "replace-with-a-unique-random-secret-of-at-least-32-characters",
+}
+
+
+def _secret_key() -> bytes:
+    value = settings.SERVER_SECRET_KEY
+    if len(value) < 32 or value in _INSECURE_EXAMPLE_SECRETS:
+        raise RuntimeError(
+            "SERVER_SECRET_KEY must be a unique random value of at least 32 characters."
+        )
+    return value.encode("utf-8")
+
+
+def validate_auth_configuration() -> None:
+    _secret_key()
+
+
+def throttle_key(scope: str, identity: str, remote_address: str) -> str:
+    material = f"{scope}\0{identity.strip().lower()}\0{remote_address}".encode("utf-8")
+    return hmac.new(_secret_key(), material, hashlib.sha256).hexdigest()
+
+
+def _b64encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _b64decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _sign_payload(payload: dict) -> str:
+    encoded = _b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    unsigned = f"{TOKEN_VERSION}.{encoded}"
+    signature = hmac.new(_secret_key(), unsigned.encode("ascii"), hashlib.sha256).digest()
+    return f"{unsigned}.{_b64encode(signature)}"
+
+
+def create_access_token(user_id: int, pharmacy_id: int | None) -> str:
+    now = int(time.time())
+    return _sign_payload({
+        "sub": user_id,
+        "pharmacy_id": pharmacy_id,
+        "iat": now,
+        "exp": now + TOKEN_TTL_SECONDS,
+        "jti": secrets.token_urlsafe(12),
+    })
+
+
+def create_ai_access_token(
+    user_id: int,
+    pharmacy_id: int,
+    ttl_seconds: int = AI_TOKEN_TTL_SECONDS,
+) -> str:
+    """Short-lived token for the external AI flow. The `aud` claim makes the main API
+    refuse it; only the /ai sub-app accepts it. Live permissions still come from the
+    user's current membership, so it can never do more than the user can."""
+    if not isinstance(pharmacy_id, int) or isinstance(pharmacy_id, bool):
+        raise ValueError("An AI token needs a selected pharmacy.")
+    ttl = max(1, min(int(ttl_seconds), AI_TOKEN_MAX_TTL_SECONDS))
+    now = int(time.time())
+    return _sign_payload({
+        "sub": user_id,
+        "pharmacy_id": pharmacy_id,
+        "iat": now,
+        "exp": now + ttl,
+        "jti": secrets.token_urlsafe(12),
+        "aud": AI_TOKEN_AUDIENCE,
+    })
+
+
+def decode_access_token(token: str) -> dict:
+    try:
+        version, encoded, supplied_signature = token.split(".")
+        if version != TOKEN_VERSION:
+            raise ValueError("Unsupported token version")
+        unsigned = f"{version}.{encoded}"
+        expected_signature = hmac.new(
+            _secret_key(), unsigned.encode("ascii"), hashlib.sha256
+        ).digest()
+        if not hmac.compare_digest(expected_signature, _b64decode(supplied_signature)):
+            raise ValueError("Invalid signature")
+        payload = json.loads(_b64decode(encoded))
+        now = int(time.time())
+        if (
+            not isinstance(payload.get("sub"), int)
+            or (payload.get("pharmacy_id") is not None and not isinstance(payload.get("pharmacy_id"), int))
+            or not isinstance(payload.get("exp"), int)
+            or not isinstance(payload.get("iat"), int)
+            or not isinstance(payload.get("jti"), str)
+            or not payload["jti"]
+            or payload["exp"] <= now
+            or payload["iat"] > now + 60
+            or payload.get("aud") not in (None, AI_TOKEN_AUDIENCE)
+        ):
+            raise ValueError("Invalid or expired claims")
+        return {
+            "user_id": payload["sub"],
+            "pharmacy_id": payload.get("pharmacy_id"),
+            "token_id": payload["jti"],
+            "token_expires_at": payload["exp"],
+            "audience": payload.get("aud"),
+        }
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired authentication token.") from exc
+
+
+def hash_pin(pin: str) -> tuple[str, str]:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", pin.encode("utf-8"), salt, PIN_HASH_ITERATIONS, dklen=32
+    )
+    return _b64encode(salt), _b64encode(digest)
+
+
+def verify_pin(pin: str, salt: str, expected_hash: str) -> bool:
+    try:
+        actual = hashlib.pbkdf2_hmac(
+            "sha256", pin.encode("utf-8"), _b64decode(salt), PIN_HASH_ITERATIONS, dklen=32
+        )
+        return hmac.compare_digest(actual, _b64decode(expected_hash))
+    except (ValueError, TypeError):
+        return False
+
+
+def verify_legacy_pin(pin: str, stored_pin: str | None) -> bool:
+    return bool(stored_pin) and hmac.compare_digest(pin.encode("utf-8"), stored_pin.encode("utf-8"))
+
+
+def validate_pin(pin: str) -> str:
+    value = pin.strip()
+    if not 4 <= len(value) <= 6 or not value.isascii() or not value.isdigit():
+        raise HTTPException(status_code=422, detail="PIN must contain 4 to 6 digits.")
+    return value
+=== shared-schema/aimicromind_roshetta_tool.js ===
+// shared-schema/aimicromind_roshetta_tool.js  (paste into the OpenAPI Toolkit's code box)
+// Runs the call the toolkit built from /ai/openapi.json ($url, $options) and adds what the
+// model must never supply: the Bearer token. Response safety lives on the server (/ai
+// response models); this code only authenticates, pins the host, and reports errors clearly.
+// The AiMicroMind sandbox has no global URL or AbortController (probe, Session 62), so the
+// URL is parsed with a regex and the timeout uses node-fetch's own option.
+//
+// Values: the workspace variables (or a per-request override sent by the Roshetta server) $vars.ROSHETTA_API_BASE and $vars.ROSHETTA_TOKEN win when
+// they exist. If the Variables page cannot be used, set TEST_BASE and TEST_TOKEN below, in the
+// toolkit's code box only. Never save or commit a real rsh1. token in this repo file
+// (tokens live 12 hours). The toolkit's Headers field does NOT fill $vars.
+
+const fetch = require('node-fetch');
+
+const TEST_BASE = 'https://guiltless-inadequately-wilda.ngrok-free.dev';
+const TEST_TOKEN = 'test123';
+
+const MAX_CHARS = 12000;
+const TIMEOUT_MS = 10000;
+const out = (o) => JSON.stringify(o);
+const split = (u) => {
+	const m = /^(https?:\/\/[^\/?#]+)(\/[^?#]*)?/i.exec(String(u || ''));
+	return m ? { origin: m[1].toLowerCase(), path: m[2] || '/' } : null;
+};
+
+try {
+	const vars = (typeof $vars === 'object' && $vars) ? $vars : {};
+	const baseRaw = vars.ROSHETTA_API_BASE || TEST_BASE;
+	const token = vars.ROSHETTA_TOKEN || TEST_TOKEN;
+	const tokenFrom = vars.ROSHETTA_TOKEN ? 'variable' : 'test constant'; // names the source only, never the value
+	if (!baseRaw || !token) return out({ ok: false, error: 'Tool is not configured: create the variables ROSHETTA_API_BASE and ROSHETTA_TOKEN.' });
+
+	const target = split($url);
+	const base = split(baseRaw);
+	if (!target) return out({ ok: false, error: 'The tool URL is not absolute. Re-import https://<host>/ai/openapi.json in the toolkit.', url: String($url) });
+	if (!base) return out({ ok: false, error: 'ROSHETTA_API_BASE must look like https://host (no path).' });
+	if (target.origin !== base.origin) return out({ ok: false, error: 'Blocked: the spec points at a different host than ROSHETTA_API_BASE. Re-import /ai/openapi.json.', host: target.origin });
+	if (target.path.indexOf('/ai/') !== 0) return out({ ok: false, error: 'Blocked: only /ai routes are allowed.', path: target.path });
+
+	const options = $options || {};
+	const method = String(options.method || 'GET').toUpperCase();
+	if (method !== 'GET' && method !== 'POST') return out({ ok: false, error: 'Blocked: method not allowed.' });
+
+	const headers = {};
+	if (options.headers) {
+		if (typeof options.headers.entries === 'function') {
+			for (const [k, v] of options.headers.entries()) headers[k] = v;
+		} else Object.assign(headers, options.headers);
+	}
+	for (const k of Object.keys(headers)) if (k.toLowerCase() === 'authorization') delete headers[k];
+	headers['Authorization'] = 'Bearer ' + token;
+	headers['Accept'] = 'application/json';
+	if (target.origin.indexOf('ngrok') !== -1) headers['ngrok-skip-browser-warning'] = 'true';
+
+	const response = await fetch(String($url), Object.assign({}, options, { method, headers, redirect: 'error', timeout: TIMEOUT_MS }));
+	const raw = await response.text();
+
+	const status = response.status;
+	if (!response.ok) {
+		const reason = { 401: 'Authentication failed or the token expired.', 403: 'This account lacks the required scope.', 404: 'Not found.', 409: 'The token has no pharmacy selected.', 422: 'Invalid arguments.', 429: 'Too many requests.' }[status] || 'Request failed.';
+		return out({ ok: false, status, error: reason, tokenFrom });
+	}
+
+	let parsed;
+	try {
+		parsed = JSON.parse(raw);
+	} catch (e) {
+		return out({ ok: false, status, error: 'Response was not JSON (proxy or tunnel page?).', contentType: response.headers.get('content-type'), bodyStart: raw.slice(0, 300) });
+	}
+	const text = JSON.stringify(parsed);
+	if (text.length > MAX_CHARS) return out({ ok: true, truncated: true, dataText: text.slice(0, MAX_CHARS) });
+	return text;
+} catch (error) {
+	return out({ ok: false, error: 'Request failed: ' + String(error && error.message ? error.message : error).slice(0, 200) });
+}
+=== agents/ ===
+D:\Desktop\projects\Micromind\PharmacySystem\agents\orchestrator.py
+D:\Desktop\projects\Micromind\PharmacySystem\agents\state.py
+D:\Desktop\projects\Micromind\PharmacySystem\agents\agents\drug_safety.py
+D:\Desktop\projects\Micromind\PharmacySystem\agents\agents\finance.py
+D:\Desktop\projects\Micromind\PharmacySystem\agents\agents\intake.py
+D:\Desktop\projects\Micromind\PharmacySystem\agents\agents\inventory.py
+D:\Desktop\projects\Micromind\PharmacySystem\agents\agents\ocr_extract.py
+D:\Desktop\projects\Micromind\PharmacySystem\agents\agents\verification.py
+D:\Desktop\projects\Micromind\PharmacySystem\agents\prompts\dialect.py

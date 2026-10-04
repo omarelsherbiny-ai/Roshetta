@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" fill="none">
+  <rect width="120" height="120" rx="28" fill="#1F6F50"/>
+  <!-- Pharmacy cross & leaf hybrid icon symbolizing Roshetta -->
+  <path d="M60 26C60 26 40 42 40 64C40 76.5 49 88 60 92C71 88 80 76.5 80 64C80 42 60 26 60 26Z" fill="#F6F4EE" fill-opacity="0.2"/>
+  <rect x="53" y="38" width="14" height="44" rx="7" fill="#F6F4EE"/>
+  <rect x="38" y="53" width="44" height="14" rx="7" fill="#F6F4EE"/>
+  <!-- Accent dot in ochre -->
+  <circle cx="60" cy="60" r="5" fill="#BE7B1F"/>
+  <path d="M72 40C77 46 84 58 78 70" stroke="#BE7B1F" stroke-width="3.5" stroke-linecap="round"/>
+</svg>
