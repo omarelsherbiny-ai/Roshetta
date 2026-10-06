@@ -7,6 +7,24 @@ existing tables that ``metadata.create_all`` deliberately does not apply.
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+# (table, column, precision, scale): the money columns changed by migration v15. Keep this
+# list in step with the Money(...) columns in models/__init__.py.
+MONEY_COLUMNS = (
+    ("inventory", "unit_buy_price", 12, 2),
+    ("inventory", "unit_sell_price", 12, 2),
+    ("inventory_batches", "unit_buy_price", 12, 2),
+    ("inventory_batches", "unit_sell_price", 12, 2),
+    ("inventory_price_history", "previous_unit_buy_price", 12, 2),
+    ("inventory_price_history", "previous_unit_sell_price", 12, 2),
+    ("inventory_price_history", "unit_buy_price", 12, 2),
+    ("inventory_price_history", "unit_sell_price", 12, 2),
+    ("entries", "total_amount", 18, 2),
+    ("entry_items", "unit_price", 12, 2),
+    ("entry_items", "unit_cost", 18, 6),
+    ("entry_items", "subtotal", 18, 2),
+    ("restock_settlements", "amount", 18, 2),
+)
+
 
 async def upgrade_schema(connection: AsyncConnection) -> None:
     """Apply all idempotent schema upgrades before the application serves traffic."""
@@ -281,4 +299,30 @@ def _upgrade_sync(connection) -> None:
                 connection.execute(text("ALTER TABLE users ADD COLUMN tokens_valid_after TIMESTAMP NULL"))
         connection.execute(text(
             "INSERT INTO schema_migrations (version, applied_at) VALUES (14, CURRENT_TIMESTAMP)"
+        ))
+
+    if 15 not in versions:
+        # Money as exact NUMERIC (debt 6, Session 113). PostgreSQL: the columns change type and
+        # existing values are rounded. SQLite cannot change a column type, and its numeric
+        # affinity stores whatever it is given, so only the stored values are rounded there;
+        # the Money column type rounds every new write on both databases. Every step can run
+        # again (a new database already has the final types).
+        table_names = inspect(connection).get_table_names()
+        for table, column, precision, scale in MONEY_COLUMNS:
+            if table not in table_names:
+                continue
+            columns = {c["name"] for c in inspect(connection).get_columns(table)}
+            if column not in columns:
+                continue
+            if connection.dialect.name == "postgresql":
+                connection.execute(text(
+                    f"ALTER TABLE {table} ALTER COLUMN {column} TYPE NUMERIC({precision}, {scale}) "
+                    f"USING ROUND({column}::numeric, {scale})"
+                ))
+            else:
+                connection.execute(text(
+                    f"UPDATE {table} SET {column} = ROUND({column}, {scale}) WHERE {column} IS NOT NULL"
+                ))
+        connection.execute(text(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (15, CURRENT_TIMESTAMP)"
         ))

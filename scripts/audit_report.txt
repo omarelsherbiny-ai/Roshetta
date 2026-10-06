@@ -2,15 +2,13 @@ ROSHETTA AUDIT REPORT (read-only scan)
 root: D:\Desktop\projects\Micromind\PharmacySystem
 
 === 1. web/src/lib/api.ts: exported functions no other file uses ===
-65 exported functions, 12 not used anywhere else
+70 exported functions, 10 not used anywhere else
   unused: getAuthHeader
   unused: returnToAccountScope
-  unused: getMyPharmacies
-  unused: createMyPharmacy
-  unused: acceptPharmacyInvitation
   unused: registerPharmacy
   unused: uploadAndScanDocument
   unused: getInventoryPriceHistory
+  unused: getTimeline
   unused: getMyStaffActivity
   unused: getMyWorkSummary
   unused: getMyProfile
@@ -20,7 +18,7 @@ root: D:\Desktop\projects\Micromind\PharmacySystem
 (a module listed here is either registered another way or never served)
 
 === 3. Routes and big files ===
-21 page.tsx route files:
+23 page.tsx route files:
   web/src/app/assistant/page.tsx
   web/src/app/inventory/[id]/edit/page.tsx
   web/src/app/inventory/[id]/restock/page.tsx
@@ -41,97 +39,61 @@ root: D:\Desktop\projects\Micromind\PharmacySystem
   web/src/app/prescriptions/page.tsx
   web/src/app/records/page.tsx
   web/src/app/scan/page.tsx
+  web/src/app/settings/account/page.tsx
   web/src/app/settings/page.tsx
+  web/src/app/settings/pharmacy/page.tsx
 Files over 600 lines (web/src, server, agents, tests):
-   1493  tests/test_api_security.py
-   1059  web/src/lib/api.ts
+   1782  tests/test_api_security.py
+   1747  tests/test_ai_api.py
+   1259  web/src/lib/api.ts
+   1050  server/app/api/inventory.py
+    936  server/app/api/staff.py
+    914  server/app/api/auth.py
+    853  web/src/types/openapi.generated.ts
     812  web/src/components/inventory/ProductForm.tsx
-    800  server/app/api/staff.py
-    800  server/app/api/inventory.py
-    795  web/src/types/openapi.generated.ts
-    776  server/app/api/auth.py
-    649  web/src/app/payables/page.tsx
-    644  web/src/components/inventory/CategoryCreateModal.tsx
-    635  web/src/app/inventory/[id]/restock/page.tsx
+    661  server/app/api/ledger.py
+    655  web/src/components/inventory/CategoryCreateModal.tsx
+    646  web/src/app/payables/page.tsx
     633  web/src/app/inventory/page.tsx
-    627  web/src/app/inventory/overview/page.tsx
+    631  web/src/app/inventory/[id]/restock/page.tsx
+    625  web/src/app/inventory/overview/page.tsx
 
 === 4. Risky patterns in web/src ===
-alert(: 16
-  web/src/app/page.tsx:175
-  web/src/app/assistant/page.tsx:179
-  web/src/app/me/page.tsx:85
-  web/src/app/me/page.tsx:103
-  web/src/app/pharmacies/page.tsx:184
-  web/src/app/pharmacies/page.tsx:188
-  web/src/app/pharmacies/page.tsx:206
-  web/src/app/pharmacies/page.tsx:218
-  web/src/app/pharmacies/[id]/page.tsx:69
-  web/src/app/pharmacies/[id]/members/page.tsx:131
-  web/src/app/pharmacies/[id]/roles/page.tsx:175
-  web/src/app/pharmacies/[id]/roles/page.tsx:179
-  web/src/app/pharmacies/[id]/roles/page.tsx:196
-  web/src/app/pharmacies/[id]/roles/page.tsx:208
-  web/src/app/settings/page.tsx:64
-  web/src/app/settings/page.tsx:66
-confirm(: 4
-  web/src/app/me/page.tsx:111
-  web/src/app/pharmacies/page.tsx:212
-  web/src/app/pharmacies/[id]/members/page.tsx:125
-  web/src/app/pharmacies/[id]/roles/page.tsx:202
+alert(: 3
+  web/src/app/pharmacies/[id]/members/page.tsx:142
+  web/src/components/ui/InlineBanner.tsx:1
+  web/src/components/ui/Toast.tsx:1
+confirm(: 1
+  web/src/app/pharmacies/[id]/members/page.tsx:136
 console.log: 0
-as any: 7
-  web/src/app/page.tsx:178
-  web/src/app/assistant/page.tsx:183
-  web/src/app/pharmacies/[id]/members/page.tsx:258
-  web/src/app/scan/page.tsx:100
-  web/src/app/scan/page.tsx:103
-  web/src/components/auth/LoginModal.tsx:330
-  web/src/lib/api.ts:1012
+as any: 0
 TODO/FIXME: 0
 localhost: 1
-  web/src/lib/api.ts:76
+  web/src/lib/api.ts:81
 zoom lock (user-scalable=no / maximum-scale): 1
-  web/src/app/layout.tsx:25
+  web/src/app/layout.tsx:12
 hardcoded currency text in JSX: 0
 
 === 5. Tool output ===
 --- tsc --noEmit (type check of the web client) ---
-src/components/inventory/ProductForm.tsx(167,9): error TS2322: Type '({ key: string; label: string; value: string; ltr: boolean; strong?: undefined; } | { key: string; label: string; value: string; ltr?: undefined; strong?: undefined; } | { key: string; label: string; value: string; strong: boolean; ltr?: undefined; } | null)[]' is not assignable to type 'DupField[]'.
-  Type '{ key: string; label: string; value: string; ltr: boolean; strong?: undefined; } | { key: string; label: string; value: string; ltr?: undefined; strong?: undefined; } | { key: string; label: string; value: string; strong: boolean; ltr?: undefined; } | null' is not assignable to type 'DupField'.
-    Type 'null' is not assignable to type 'DupField'.
-src/components/inventory/ProductForm.tsx(189,26): error TS2677: A type predicate's type must be assignable to its parameter's type.
-  Type 'DupField' is not assignable to type '{ key: string; label: string; value: string; ltr: boolean; strong?: undefined; } | { key: string; label: string; value: string; ltr?: undefined; strong?: undefined; } | { key: string; label: string; value: string; strong: boolean; ltr?: undefined; } | null'.
-    Type 'DupField' is not assignable to type '{ key: string; label: string; value: string; ltr: boolean; strong?: undefined; } | { key: string; label: string; value: string; ltr?: undefined; strong?: undefined; } | { key: string; label: string; value: string; strong: boolean; ltr?: undefined; }'.
-      Type 'DupField' is not assignable to type '{ key: string; label: string; value: string; strong: boolean; ltr?: undefined; }'.
-        Types of property 'strong' are incompatible.
-          Type 'boolean | undefined' is not assignable to type 'boolean'.
-            Type 'undefined' is not assignable to type 'boolean'.
+(no output; the tool found nothing to report)
 
 --- vulture (unused Python code, confidence 80+) ---
-server\app\api\auth.py:215: unused variable 'cls' (100% confidence)
 server\app\api\auth.py:228: unused variable 'cls' (100% confidence)
-server\app\api\inventory.py:116: unused variable 'cls' (100% confidence)
-server\app\api\inventory.py:674: unused variable 'cls' (100% confidence)
-server\app\api\staff.py:84: unused variable 'cls' (100% confidence)
-server\app\api\staff.py:124: unused variable 'cls' (100% confidence)
-server\app\api\staff.py:183: unused variable 'cls' (100% confidence)
+server\app\api\auth.py:241: unused variable 'cls' (100% confidence)
+server\app\api\inventory.py:123: unused variable 'cls' (100% confidence)
+server\app\api\inventory.py:923: unused variable 'cls' (100% confidence)
+server\app\api\staff.py:125: unused variable 'cls' (100% confidence)
+server\app\api\staff.py:165: unused variable 'cls' (100% confidence)
+server\app\api\staff.py:224: unused variable 'cls' (100% confidence)
 
 --- ruff F401 F841 (unused imports and variables) ---
 agents\agents\inventory.py:1:20: F401 [*] `typing.List` imported but unused
 agents\agents\inventory.py:1:26: F401 [*] `typing.Dict` imported but unused
 agents\agents\inventory.py:1:32: F401 [*] `typing.Any` imported but unused
-agents\agents\verification.py:3:20: F401 [*] `typing.Dict` imported but unused
-agents\agents\verification.py:3:26: F401 [*] `typing.Any` imported but unused
-server\app\api\actions.py:4:22: F401 [*] `datetime.datetime` imported but unused
-server\app\api\auth.py:2:28: F401 [*] `datetime.datetime` imported but unused
-server\app\api\inventory.py:15:38: F401 [*] `server.app.services.rbac.get_current_user` imported but unused
-server\app\api\me.py:4:22: F401 [*] `datetime.date` imported but unused
-server\app\api\me.py:16:67: F401 [*] `server.app.db.models.UserCredential` imported but unused
-server\app\api\ocr.py:2:22: F401 [*] `datetime.datetime` imported but unused
-server\app\api\staff.py:22:67: F401 [*] `server.app.db.models.User` imported but unused
-server\app\db\models\__init__.py:2:8: F401 `json` imported but unused
-server\app\db\session.py:1:8: F401 [*] `os` imported but unused
-Found 14 errors.
-[*] 13 fixable with the `--fix` option.
+agents\agents\verification.py:5:20: F401 [*] `typing.Dict` imported but unused
+agents\agents\verification.py:5:26: F401 [*] `typing.Any` imported but unused
+server\app\db\money.py:16:41: F401 [*] `typing.Optional` imported but unused
+Found 6 errors.
+[*] 6 fixable with the `--fix` option.
 

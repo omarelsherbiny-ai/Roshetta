@@ -1,3 +1,4 @@
+# server/app/services/financials.py
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -5,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.app.db.models import LedgerEntry, LedgerEntryItem
+from server.app.db.money import money_sum, round_money
 
 
 BUSINESS_TIMEZONE = ZoneInfo("Africa/Cairo")
@@ -65,7 +67,7 @@ async def financial_summary_for_range(
         .where(*entry_scope, LedgerEntry.entry_type.in_(("log_sale", "log_expense")))
         .group_by(LedgerEntry.entry_type)
     )
-    by_type = {row[0]: (float(row[1]), int(row[2])) for row in totals.all()}
+    by_type = {row[0]: (round_money(row[1]), int(row[2])) for row in totals.all()}
     sales_total, sales_count = by_type.get("log_sale", (0.0, 0))
     expenses_total, expenses_count = by_type.get("log_expense", (0.0, 0))
 
@@ -81,9 +83,10 @@ async def financial_summary_for_range(
     )
     missing_cost = {row[0] for row in sale_entry_ids.all()} - {row[0] for row in rows}
     cost_complete = not missing_cost and all(row[2] is not None for row in rows)
-    cost_of_goods = sum(float(quantity) * float(unit_cost) for _, quantity, unit_cost in rows if unit_cost is not None)
-    gross_profit = sales_total - cost_of_goods if cost_complete else None
-    net_profit = gross_profit - expenses_total if gross_profit is not None else None
+    # Each line's cost is taken at 2 places, like each sale subtotal, so profit adds up exactly.
+    cost_of_goods = money_sum(float(quantity) * float(unit_cost) for _, quantity, unit_cost in rows if unit_cost is not None)
+    gross_profit = round_money(sales_total - cost_of_goods) if cost_complete else None
+    net_profit = round_money(gross_profit - expenses_total) if gross_profit is not None else None
 
     return {
         "date": date_label,

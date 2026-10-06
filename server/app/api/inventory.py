@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import or_, and_, case, func, update
 
+from server.app.db.money import MoneyIn, round_money
 from server.app.db.session import get_db
 from server.app.db.models import Category, InventoryItem, InventoryBatch, InventoryPriceHistory, AuditLog, User
 from server.app.services.rbac import require_permission
@@ -113,8 +114,8 @@ class ProductDetailsPayload(BaseModel):
     active_ingredient: Optional[str] = Field(default=None, max_length=150)
     category:          Optional[str] = Field(default=None, max_length=50)
     min_threshold:     float = Field(default=5.0, ge=1, le=1_000_000, allow_inf_nan=False)
-    unit_buy_price:    float = Field(default=0.0, ge=0, le=100_000_000, allow_inf_nan=False)
-    unit_sell_price:   float = Field(gt=0, le=100_000_000, allow_inf_nan=False)
+    unit_buy_price:    MoneyIn = Field(default=0.0, ge=0, le=100_000_000, allow_inf_nan=False)
+    unit_sell_price:   MoneyIn = Field(gt=0, le=100_000_000, allow_inf_nan=False)
     expiry_date:       Optional[str] = Field(default=None, max_length=20)
 
     @field_validator("expiry_date")
@@ -409,8 +410,8 @@ async def inventory_summary(
     return {
         "item_count": int(item_count),
         "total_units": float(total_units),
-        "potential_sales_value": float(selling_value),
-        "stock_cost_value": float(cost_value) if cost_complete else None,
+        "potential_sales_value": round_money(selling_value),
+        "stock_cost_value": round_money(cost_value) if cost_complete else None,
         "stock_cost_value_complete": cost_complete,
     }
 
@@ -533,8 +534,8 @@ async def get_inventory_item_batches(
         "unit_buy_price": row.unit_buy_price,
         "unit_sell_price": row.unit_sell_price,
         "expiry_date": row.expiry_date,
-        "total_cost": round(row.quantity * row.unit_buy_price, 2),
-        "total_retail": round(row.quantity * row.unit_sell_price, 2),
+        "total_cost": round_money(row.quantity * row.unit_buy_price),
+        "total_retail": round_money(row.quantity * row.unit_sell_price),
         "created_at": row.created_at.isoformat() + "Z" if row.created_at else None,
     } for row in result.scalars().all()]
 
@@ -909,8 +910,8 @@ async def match_product(
 class DirectRestockPayload(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     quantity: float = Field(gt=0, le=1_000_000, allow_inf_nan=False)
-    unit_buy_price: Optional[float] = Field(default=None, ge=0, le=100_000_000, allow_inf_nan=False)
-    unit_sell_price: Optional[float] = Field(default=None, gt=0, le=100_000_000, allow_inf_nan=False)
+    unit_buy_price: Optional[MoneyIn] = Field(default=None, ge=0, le=100_000_000, allow_inf_nan=False)
+    unit_sell_price: Optional[MoneyIn] = Field(default=None, gt=0, le=100_000_000, allow_inf_nan=False)
     batch_number: Optional[str] = Field(default=None, max_length=60)
     expiry_date: Optional[str] = Field(default=None, max_length=20)
     supplier_notes: Optional[str] = Field(default=None, max_length=500)
@@ -971,7 +972,7 @@ async def restock_product(
     # Keep this restock's ledger and lot at the same purchase cost. An explicit
     # zero is a valid lot cost and must not inherit the product's older price.
     unit_cost = req.unit_buy_price if req.unit_buy_price is not None else (item.unit_buy_price or 0.0)
-    total_cost = round(req.quantity * unit_cost, 2)
+    total_cost = round_money(req.quantity * unit_cost)
     supplier_name = " ".join(req.supplier_name.split()) if req.supplier_name else None
     supplier_notes = " ".join(req.supplier_notes.split()) if req.supplier_notes else None
 

@@ -26,6 +26,7 @@ import {
   ConfirmedActionResponse,
   CancelledActionResponse,
   ProposedItem,
+  ProductDraft,
   PharmacyProfile,
   MyPharmaciesResponse,
   MyPharmacy,
@@ -440,10 +441,13 @@ export type PinChangeFailure = 'wrong_pin' | 'throttled' | 'network' | 'other';
 /** A failed PIN change. `failure` tells the page what to show; a wrong current PIN (403) is a plain message, never a dead session. */
 export class PinChangeError extends Error {
   readonly failure: PinChangeFailure;
-  constructor(failure: PinChangeFailure, message: string) {
+  /** Seconds the server asked to wait (`Retry-After` of a 429); null when it sent none or the browser may not read it. */
+  readonly retryAfterSeconds: number | null;
+  constructor(failure: PinChangeFailure, message: string, retryAfterSeconds: number | null = null) {
     super(message);
     this.name = 'PinChangeError';
     this.failure = failure;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -471,7 +475,10 @@ export async function changePin(currentPin: string, newPin: string): Promise<Cha
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const failure: PinChangeFailure = res.status === 403 ? 'wrong_pin' : res.status === 429 ? 'throttled' : 'other';
-    throw new PinChangeError(failure, apiErrorMessage(data.detail, 'Could not change your PIN.', 'تعذر تغيير رمز PIN.'));
+    // A cross-origin page can read Retry-After only when the server lists it in Access-Control-Expose-Headers.
+    const header = Number(res.headers.get('Retry-After'));
+    const retryAfter = failure === 'throttled' && Number.isFinite(header) && header > 0 ? Math.ceil(header) : null;
+    throw new PinChangeError(failure, apiErrorMessage(data.detail, 'Could not change your PIN.', 'تعذر تغيير رمز PIN.'), retryAfter);
   }
   if (typeof data.token === 'string' && data.token) replaceToken(data.token);
   return data;
@@ -595,6 +602,7 @@ export async function updatePharmacyProfile(profile: PharmacyProfileUpdate): Pro
 export async function sendChatMessage(text: string, contextId: string = "default", language: string = DEFAULT_LANGUAGE): Promise<ChatMessage> {
   const res = await apiFetch(`${API_BASE_URL}/api/chat`, {
     method: 'POST',
+    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
       ...getAuthHeader()
@@ -659,13 +667,25 @@ export async function reviewPrescription(
   return data;
 }
 
+/** A refused confirm keeps the HTTP status (409 = a product with the same name exists). */
+export class ActionConfirmError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export async function confirmActionProposal(
   actionId: string,
   editedItems?: ProposedItem[],
-  notes?: string
+  notes?: string,
+  product?: ProductDraft,
+  allowDuplicate?: boolean,
 ): Promise<ConfirmedActionResponse> {
   const res = await apiFetch(`${API_BASE_URL}/api/actions/${actionId}/confirm`, {
     method: 'POST',
+    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
       ...getAuthHeader()
@@ -673,12 +693,17 @@ export async function confirmActionProposal(
     body: JSON.stringify({
       edited_items: editedItems,
       notes,
+      product,
+      allow_duplicate: allowDuplicate,
     }),
   });
 
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(errorData.detail, `Confirmation failed (${res.status}).`, 'تعذر تأكيد العملية.'));
+    throw new ActionConfirmError(
+      apiErrorMessage(errorData.detail, `Confirmation failed (${res.status}).`, 'تعذر تأكيد العملية.'),
+      res.status,
+    );
   }
 
   return res.json();
@@ -689,6 +714,7 @@ export async function cancelActionProposal(
 ): Promise<CancelledActionResponse> {
   const res = await apiFetch(`${API_BASE_URL}/api/actions/${actionId}/cancel`, {
     method: 'POST',
+    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
       ...getAuthHeader()
@@ -904,6 +930,59 @@ export async function getRecentActivity(limit: number = 20): Promise<PharmacyAct
     headers: { ...getAuthHeader() },
   });
   if (!res.ok) throw new Error(apiErrorMessage(undefined, `Could not load pharmacy activity (${res.status}).`, 'تعذر تحميل نشاط الصيدلية.'));
+  return res.json();
+}
+
+export interface TimelineEventLine {
+  item_name: string;
+  quantity: number;
+  unit_price: number;
+  subtotal: number;
+}
+
+export interface TimelineEvent {
+  id: string;
+  source: 'ledger' | 'audit';
+  kind: string;
+  occurred_at: string | null;
+  actor_name: string | null;
+  actor_role_name: string | null;
+  product_name: string | null;
+  amount: number | null;
+  entity_type: string;
+  entity_id: string;
+  // Ledger events carry payment_method, item_count, notes, supplier_name and items;
+  // audit events carry whatever the action recorded (PAY_SUPPLIER: amount, supplier_name).
+  details: Record<string, unknown>;
+}
+
+export interface TimelineQuery {
+  limit: number;
+  offset?: number;
+  kind?: string;
+  userId?: number;
+  startDay?: string;
+  endDay?: string;
+}
+
+/** Thrown when the server answers 403: the member's role cannot view any records. */
+export class TimelineForbiddenError extends Error {}
+
+export async function getTimeline(query: TimelineQuery): Promise<TimelineEvent[]> {
+  const params = new URLSearchParams({ limit: String(query.limit) });
+  if (query.offset) params.set('offset', String(query.offset));
+  if (query.kind) params.set('kind', query.kind);
+  if (query.userId) params.set('user_id', String(query.userId));
+  if (query.startDay && query.endDay) {
+    params.set('start_day', query.startDay);
+    params.set('end_day', query.endDay);
+  }
+  const res = await apiFetch(`${API_BASE_URL}/api/ledger/timeline?${params.toString()}`, {
+    headers: { ...getAuthHeader() },
+    cache: 'no-store',
+  });
+  if (res.status === 403) throw new TimelineForbiddenError('forbidden');
+  if (!res.ok) throw new Error(apiErrorMessage(undefined, 'Could not load the records timeline.', 'تعذر تحميل سجل الحركات'));
   return res.json();
 }
 

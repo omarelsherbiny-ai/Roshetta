@@ -81,8 +81,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onSuccess }) => 
       } else {
         onSuccess(data.user, data.pharmacy, data.token, data.role, data.permissions);
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '');
     } finally {
       setIsLoading(false);
     }
@@ -104,8 +104,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onSuccess }) => 
       } else {
         onSuccess(loginResult.user, data.pharmacy, data.token, data.role, data.permissions);
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '');
     } finally {
       setIsLoading(false);
     }
@@ -130,8 +130,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onSuccess }) => 
       if (loginResult) {
         onSuccess(loginResult.user, updated.profile, loginResult.token, loginResult.role, loginResult.permissions);
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '');
     } finally {
       setIsLoading(false);
     }

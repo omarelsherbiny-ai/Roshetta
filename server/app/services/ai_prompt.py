@@ -1,9 +1,14 @@
 # server/app/services/ai_prompt.py
-"""The fixed system prompt for the MicroMind agent path, kept in code (Session 109, W8 c).
+"""What the MicroMind agent path sends (Session 109, W8 c; prompt removed in Session 126).
 
-`build_agent_question` is the only place the text sent to the agent flow is assembled:
-the fixed prompt, the tools this member may use right now, the language, and the
-already scrubbed user text. Nothing here holds data about the pharmacy or the person.
+There is NO prompt in code: the assistant's prompt lives in the MicroMind website (the flow's
+system message) and is pasted there; see "MicroMind / AI integration contract" in
+ROSHETTA_PROJECT.md. It is not sent with each question because the Groq free tier allows only
+8000 tokens per minute.
+`build_agent_question` is the only place the text sent to the agent flow is assembled: the
+already scrubbed user text, nothing else. The tool list is the OpenAPI spec
+the toolkit imports; the member's scopes are enforced by the /ai routes (a 403 answer).
+Nothing here holds data about the pharmacy or the person.
 """
 from typing import Iterable, Optional
 
@@ -20,9 +25,9 @@ TOOL_SCOPES: dict = {
     "match_product": "view_inventory",
     "get_item_batches": "view_inventory",
     "get_item_price_history": "view_inventory",
-    "list_low_stock": "view_inventory",
     "list_categories": "view_inventory",
     "get_inventory_summary": "view_inventory",
+    "get_pharmacy_summary": ("view_inventory", "view_reports"),
     "list_ledger_entries": "view_reports",
     "get_sales_summary": "view_reports",
     "list_supplier_payables": "view_reports",
@@ -30,16 +35,22 @@ TOOL_SCOPES: dict = {
     "list_records_timeline": ("view_reports", "view_inventory", "view_audit"),
     "get_my_activity": None,
     "list_roles": "owner",
+    "propose_product": "manage_inventory",
+    "propose_category": "manage_inventory",
+    "propose_product_update": "manage_inventory",
+    "propose_restock": "log_restock",
+    "propose_invite": "manage_staff",
 }
 
+# Kept for the tests that tie the tables to the spec; no longer sent to the model (Session 126).
 TOOL_GUIDE: dict = {
-    "search_inventory": "find products by name, active ingredient, barcode or category",
-    "match_product": "find one product by a spoken or typed name",
+    "search_inventory": "list or search products by name, active ingredient, barcode or category; with no search and no category it lists every product alphabetically (limit up to 50, offset to read the next page)",
+    "match_product": "find one product by a spoken or typed name; when the spelling is off it returns the closest products as suggestions",
     "get_item_batches": "stock lots of one product with expiry dates (needs the product id from a search)",
     "get_item_price_history": "selling-price changes of one product (needs the product id)",
-    "list_low_stock": "products at or below their minimum level",
     "list_categories": "categories and how many products each has",
     "get_inventory_summary": "total products, units and selling value in stock",
+    "get_pharmacy_summary": "one-call overview for today: stock totals, low, out-of-stock and expiring counts, today's sales and expenses, what is owed to suppliers; `omitted` lists the parts this role may not see",
     "list_ledger_entries": "recent sales, expenses and restocks",
     "get_sales_summary": "sales and expense totals for a day or a range",
     "list_supplier_payables": "credit restocks, what was paid and what is still owed",
@@ -47,19 +58,12 @@ TOOL_GUIDE: dict = {
     "list_records_timeline": "what happened lately: records, product and category changes, staff and settings changes",
     "get_my_activity": "the signed-in person's own totals for a period",
     "list_roles": "custom roles and their scopes (owner only)",
+    "propose_product": "prepare a card to add a NEW product (needs name and sell price); the user reviews and confirms it in the app",
+    "propose_category": "prepare a card to create a NEW product category (needs only the name); the user reviews and confirms it in the app",
+    "propose_product_update": "prepare a card to CHANGE an existing product's name, sell price, buy price, low-stock level or category (needs the product id from a search or match result and at least one new value; stock cannot be changed); the user reviews and confirms it in the app",
+    "propose_restock": "prepare a card that ADDS units to an existing product's stock (needs the product id from a search or match result and the quantity to add, not the new total; the buy price comes from the product and the user can edit it on the card); the user reviews and confirms it in the app",
+    "propose_invite": "prepare a card that creates an invitation link for a role (needs the role name: a built-in role or a custom role's name; expires in 7 days unless the user says otherwise); the link does not exist until the user confirms in the app and you never see it",
 }
-
-SYSTEM_PROMPT = """You are the assistant inside the Roshetta pharmacy app. You help one signed-in member of one pharmacy.
-
-Language: Arabic is the default. Answer in the language of the user's question; if the app says "Answer in English", use English. Keep answers short and practical.
-Money and time: every amount is in Egyptian pounds (EGP). Days and hours are Cairo time. Say "today" only for the Cairo day.
-Facts: never invent numbers, products, prices, stock, people or dates. If the answer is about this pharmacy's data, call a tool first and answer only from what it returned. If a tool returned nothing, say so.
-Tools: use only the tools listed under "Tools you may use now". Use at most three calls per message and prefer the narrowest call (a product name, a day, a limit). Dates are YYYY-MM-DD. Product ids come only from a search result; never guess one. Numbers may be written with Arabic-Indic digits; pass them as they are.
-Missing permission: if the question needs a tool that is not in your list, say in one sentence that this account's role does not allow it and who can (the pharmacy owner). Do not try another tool to work around it.
-Tool errors: if a tool answers with an error, tell the user in plain words what happened and what to do next (try again in a minute, narrow the question, or open the matching screen in the app). Never show raw error text.
-Writing: you never change data. A sale, an expense or a restock is only proposed: the user writes it in the chat (for example "sell 2 Panadol") and the app shows a proposal that the user confirms. Never say a record was saved.
-Out of reach: you cannot list members, read schedules or pay, change prices or products, pay suppliers, or send invitations. Say that plainly and point to the matching screen.
-Privacy: never repeat phone numbers, ids, PINs or tokens, and never ask for them."""
 
 
 def allowed_tools(role: Optional[str], scopes: Optional[Iterable[str]]) -> list:
@@ -82,14 +86,16 @@ def allowed_tools(role: Optional[str], scopes: Optional[Iterable[str]]) -> list:
 
 def build_agent_question(
     scrubbed_text: str,
-    response_language: str,
-    role: Optional[str],
-    scopes: Optional[Iterable[str]],
+    response_language: Optional[str] = None,
+    role: Optional[str] = None,
+    scopes: Optional[Iterable[str]] = None,
 ) -> str:
-    """Fixed prompt + this member's tool list + language + the scrubbed question."""
-    lines = [f"- {name}: {TOOL_GUIDE[name]}" for name in allowed_tools(role, scopes)]
-    tools = "\n".join(lines) if lines else "- (none)"
-    return (
-        f"{SYSTEM_PROMPT}\n\nTools you may use now:\n{tools}\n\n"
-        f"Answer in {response_language}.\nUser question:\n{scrubbed_text}"
-    )
+    """The user message for the agent flow: the scrubbed question and nothing else.
+
+    No language line is added (Omar, Session 126): the model answers in the language of the
+    question (the rule is in the website prompt). `response_language`, `role` and `scopes`
+    stay in the signature for the callers; none of them is sent. The prompt lives in the
+    flow's system message (MicroMind website) and the /ai routes refuse what the member may
+    not read or prepare.
+    """
+    return scrubbed_text

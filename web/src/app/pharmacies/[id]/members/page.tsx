@@ -6,6 +6,8 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { TopHeader } from '@/components/ui/TopHeader';
 import { BottomNav } from '@/components/ui/BottomNav';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { ToastStack, useToasts } from '@/components/ui/Toast';
 import {
   assignPharmacyRole,
   assignPharmacyFixedRole,
@@ -27,11 +29,13 @@ export default function PharmacyMembersPage() {
   const params = useParams();
   const router = useRouter();
   const { t, lang, dir, isRTL } = useLanguage();
+  const { toasts, push, dismiss } = useToasts();
+  const [removeTargetId, setRemoveTargetId] = useState<number | null>(null);
 
   const pharmacyId = parseInt(params.id as string, 10);
 
   const [members, setMembers] = useState<PharmacyStaffMember[]>([]);
-  const [profile, setProfile] = useState<any>(null);
+  const [profile, setProfile] = useState<Awaited<ReturnType<typeof getPharmacySummary>> | null>(null);
   // Roles the signed-in member may hand out (the server decides with `grantable`; the owner may grant all but owner).
   const [grantableRoles, setGrantableRoles] = useState<PharmacyRoleOverviewItem[]>([]);
   const [invitations, setInvitations] = useState<PharmacyInvitationSummary[]>([]);
@@ -132,15 +136,18 @@ export default function PharmacyMembersPage() {
     }
   };
 
-  const handleRemoveMember = async (userId: number) => {
-    if (!window.confirm(t('mb_confirm_revoke'))) return;
-    try {
-      await removePharmacyStaff(pharmacyId, userId);
-      setSelectedMember(null);
-      await loadData();
-    } catch (e: any) {
-      alert(e.message || t('mb_remove_failed'));
-    }
+  // Opens the in-app confirmation; the removal itself runs in `confirmRemoveMember`.
+  const handleRemoveMember = (userId: number) => {
+    setRemoveTargetId(userId);
+  };
+
+  // Throws on failure so the dialog stays open and shows the error.
+  const confirmRemoveMember = async () => {
+    if (removeTargetId === null) return;
+    await removePharmacyStaff(pharmacyId, removeTargetId);
+    setSelectedMember(null);
+    await loadData();
+    push('success', t('mb_rm_done'));
   };
 
   // Overview keys are 'pharmacist' | 'cashier' | 'viewer' | 'custom:<id>', the same values the selects use.
@@ -433,6 +440,21 @@ export default function PharmacyMembersPage() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={removeTargetId !== null}
+        variant="destructive"
+        title={t('mb_rm_title')}
+        description={t('mb_confirm_revoke')}
+        confirmLabel={t('mb_rm_confirm')}
+        cancelLabel={t('mb_rm_cancel')}
+        retryLabel={t('mb_rm_retry')}
+        busyLabel={t('mb_rm_busy')}
+        fallbackError={t('mb_remove_failed')}
+        onConfirm={confirmRemoveMember}
+        onClose={() => setRemoveTargetId(null)}
+      />
+      <ToastStack toasts={toasts} onDismiss={dismiss} dismissLabel={t('mb_toast_dismiss')} />
 
       <BottomNav />
     </div>

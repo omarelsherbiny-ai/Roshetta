@@ -16,10 +16,19 @@ from server.app.config import settings
 
 _PRUNE_ABOVE_KEYS = 5000
 
-# One chat message can make the assistant call several /ai tools, so the /ai budget
-# is this many calls per allowed chat message in the same window. Kept as a constant
-# so no new setting is needed; move it to config.py if it must be tuned in .env.
+# One chat message can make the assistant call several /ai tools, so by default the /ai
+# budget is this many calls per allowed chat message in the same window. Set
+# AI_RATE_LIMIT_CALLS in server/.env to choose the number of calls directly.
 AI_CALLS_PER_CHAT_MESSAGE = 5
+
+
+def ai_call_budget() -> int:
+    """Calls allowed per window on the /ai routes: AI_RATE_LIMIT_CALLS when set (above 0),
+    else the chat message limit times AI_CALLS_PER_CHAT_MESSAGE."""
+    configured = int(settings.AI_RATE_LIMIT_CALLS or 0)
+    if configured > 0:
+        return configured
+    return settings.CHAT_RATE_LIMIT_MESSAGES * AI_CALLS_PER_CHAT_MESSAGE
 
 
 class SlidingWindowLimiter:
@@ -62,6 +71,6 @@ chat_limiter = SlidingWindowLimiter(
 # /ai tool routes (Session 111, debt 15 a): same window as chat, a multiple of its
 # message budget, counted per user and pharmacy after the token is checked.
 ai_limiter = SlidingWindowLimiter(
-    settings.CHAT_RATE_LIMIT_MESSAGES * AI_CALLS_PER_CHAT_MESSAGE,
+    ai_call_budget(),
     settings.CHAT_RATE_LIMIT_WINDOW_SECONDS,
 )

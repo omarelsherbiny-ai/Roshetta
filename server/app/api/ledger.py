@@ -7,10 +7,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from sqlalchemy import and_, func, or_, text
+from sqlalchemy import Float, and_, func, literal, or_, text
 
 from server.app.db.session import get_db
 from server.app.db.models import AuditLog, LedgerEntry, RestockSettlement, User, has_permission
+from server.app.db.money import MoneyIn, money_sum, round_money
 from server.app.services.clock import utc_now_naive
 from server.app.services.rbac import get_current_user, require_permission
 from server.app.services.financials import daily_financial_summary, financial_summary_for_range, local_day_bounds_utc
@@ -294,7 +295,17 @@ async def list_records_timeline(
                 "actor_name": names.get(actor_id), "actor_role_name": None,
                 "product_name": first, "amount": e.total_amount,
                 "entity_type": "ledger_entry", "entity_id": e.id,
-                "details": {"payment_method": e.payment_method, "item_count": len(e.items)},
+                # Lines, notes and supplier come with the entry, so the web can open an event without a second request.
+                "details": {
+                    "payment_method": e.payment_method,
+                    "item_count": len(e.items),
+                    "notes": e.notes,
+                    "supplier_name": getattr(e, "supplier_name", None),
+                    "items": [
+                        {"item_name": i.item_name, "quantity": i.quantity, "unit_price": i.unit_price, "subtotal": i.subtotal}
+                        for i in e.items
+                    ],
+                },
             })
 
     if (can_product or can_audit) and (kind is None or kind not in LEDGER_KINDS):
@@ -344,6 +355,9 @@ async def list_records_timeline(
 # is recognised at sale from FIFO unit_cost).
 # ─────────────────────────────────────────────────────────────
 PAYABLE_EPS = 0.005  # half a piastre: amounts are rounded to 2 places when written
+# The same number as a Float literal for SQL: a bare 0.005 compared with a Money column would be
+# bound as a Money value and rounded up to 0.01.
+_SQL_EPS = literal(PAYABLE_EPS, Float)
 PayableStatus = Literal["unpaid", "partly_paid", "paid"]
 
 
@@ -382,7 +396,7 @@ class PayablesSummaryResponse(BaseModel):
 class SettlementCreate(BaseModel):
     # The payer is always the signed-in user, so no payer field is accepted.
     model_config = ConfigDict(extra="forbid")
-    amount: float = Field(gt=0, le=100_000_000, allow_inf_nan=False)
+    amount: MoneyIn = Field(gt=0, le=100_000_000, allow_inf_nan=False)
     payment_method: Literal["cash", "card"]
 
 
@@ -481,15 +495,15 @@ async def _build_payables(db: AsyncSession, pharmacy_id: int, rows: list) -> Lis
         })
     output = []
     for entry, paid_raw in rows:
-        total = round(float(entry.total_amount), 2)
-        paid = round(float(paid_raw), 2)
+        total = round_money(entry.total_amount)
+        paid = round_money(paid_raw)
         status = _payable_status(total, paid)
         output.append({
             "id": entry.id,
             "supplier_name": entry.supplier_name,
             "total_amount": total,
             "paid_amount": paid,
-            "remaining_amount": 0.0 if status == "paid" else round(total - paid, 2),
+            "remaining_amount": 0.0 if status == "paid" else round_money(total - paid),
             "status": status,
             "notes": entry.notes,
             "confirmed_at": entry.confirmed_at.isoformat() + "Z" if entry.confirmed_at else None,
@@ -525,15 +539,16 @@ async def payables_summary(
         .where(*_payables_conditions(ctx, tracking_start, start_day, end_day))
     )).all()
     counts = {"unpaid": 0, "partly_paid": 0, "paid": 0}
-    total_remaining = 0.0
+    open_balances = []
     for total_raw, paid_raw in rows:
-        total, paid = round(float(total_raw), 2), round(float(paid_raw), 2)
+        total, paid = round_money(total_raw), round_money(paid_raw)
         status = _payable_status(total, paid)
         counts[status] += 1
         if status != "paid":
-            total_remaining += total - paid
+            open_balances.append(round_money(total - paid))
+    total_remaining = money_sum(open_balances)
     return {
-        "total_remaining": round(total_remaining, 2),
+        "total_remaining": total_remaining,
         "open_count": counts["unpaid"] + counts["partly_paid"],
         "unpaid_count": counts["unpaid"],
         "partly_paid_count": counts["partly_paid"],
@@ -564,11 +579,11 @@ async def list_payables(
         .where(*_payables_conditions(ctx, tracking_start, start_day, end_day))
     )
     if status == "paid":
-        query = query.where(paid_col >= LedgerEntry.total_amount - PAYABLE_EPS)
+        query = query.where(paid_col >= LedgerEntry.total_amount - _SQL_EPS)
     elif status == "unpaid":
-        query = query.where(paid_col < LedgerEntry.total_amount - PAYABLE_EPS, paid_col <= PAYABLE_EPS)
+        query = query.where(paid_col < LedgerEntry.total_amount - _SQL_EPS, paid_col <= _SQL_EPS)
     elif status == "partly_paid":
-        query = query.where(paid_col < LedgerEntry.total_amount - PAYABLE_EPS, paid_col > PAYABLE_EPS)
+        query = query.where(paid_col < LedgerEntry.total_amount - _SQL_EPS, paid_col > _SQL_EPS)
     result = await db.execute(
         query.order_by(LedgerEntry.created_at.desc(), LedgerEntry.id.desc()).offset(offset).limit(limit)
     )
@@ -599,17 +614,17 @@ async def record_settlement(
     if entry is None:
         raise HTTPException(status_code=404, detail="Credit restock not found in this pharmacy.")
 
-    amount = round(req.amount, 2)
+    amount = round_money(req.amount)
     if amount <= 0:
         raise HTTPException(status_code=422, detail="The payment amount must be at least 0.01.")
-    paid_before = round(float((await db.execute(
+    paid_before = round_money((await db.execute(
         select(func.coalesce(func.sum(RestockSettlement.amount), 0.0)).where(
             RestockSettlement.pharmacy_id == pharmacy_id,
             RestockSettlement.entry_id == entry.id,
         )
-    )).scalar_one()), 2)
-    total = round(float(entry.total_amount), 2)
-    remaining = round(total - paid_before, 2)
+    )).scalar_one())
+    total = round_money(entry.total_amount)
+    remaining = round_money(total - paid_before)
     if remaining <= PAYABLE_EPS:
         raise HTTPException(status_code=409, detail="This restock is already fully paid.")
     if amount > remaining + PAYABLE_EPS:
@@ -635,12 +650,12 @@ async def record_settlement(
             "role_name": ctx.get("role_name"),
             "amount": amount,
             "payment_method": req.payment_method,
-            "remaining_after": round(remaining - amount, 2),
+            "remaining_after": round_money(remaining - amount),
             "supplier_name": entry.supplier_name,
         }, ensure_ascii=False),
         timestamp=utc_now_naive(),
     ))
     await db.flush()
-    payable = (await _build_payables(db, pharmacy_id, [(entry, round(paid_before + amount, 2))]))[0]
+    payable = (await _build_payables(db, pharmacy_id, [(entry, round_money(paid_before + amount))]))[0]
     await db.commit()
     return payable

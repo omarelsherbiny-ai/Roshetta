@@ -26,6 +26,16 @@ router = APIRouter(prefix="/api/auth", tags=["Auth & Staff"])
 AUTH_FAILURE_LIMIT = 5
 AUTH_FAILURE_WINDOW = timedelta(minutes=15)
 AUTH_LOCKOUT = timedelta(minutes=15)
+_TOO_MANY_ATTEMPTS = "Too many attempts. Try again in 15 minutes."
+
+
+def _too_many_attempts(seconds: float) -> HTTPException:
+    """The 429 for a locked sign-in key, with a Retry-After header (whole seconds, at least 1)."""
+    return HTTPException(
+        status_code=429,
+        detail=_TOO_MANY_ATTEMPTS,
+        headers={"Retry-After": str(max(1, int(seconds + 0.999)))},
+    )
 
 
 class UserResponse(BaseModel):
@@ -140,7 +150,11 @@ async def logout(
         expires_at=utc_from_timestamp_naive(ctx["token_expires_at"]),
         revoked_at=now,
     ))
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # The same token was signed out by a parallel request: it is already revoked.
+        await db.rollback()
     return {"success": True, "message": "Session signed out."}
 
 
@@ -166,7 +180,12 @@ async def return_to_account_scope(
             user_role=ctx["role"], timestamp=now,
             details_json=json.dumps({"role_name": ctx.get("role_name")}),
         ))
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # The same token was used by a parallel request: only one switch may win.
+        await db.rollback()
+        raise HTTPException(status_code=401, detail="This session has been signed out.") from exc
     user_result = await db.execute(select(User).where(User.id == ctx["user_id"]))
     user = user_result.scalars().first()
     if not user or not user.is_active:
@@ -330,7 +349,7 @@ async def _check_auth_throttle(db: AsyncSession, key: str) -> None:
     record = result.scalars().first()
     now = utc_now_naive()
     if record and record.blocked_until and record.blocked_until > now:
-        raise HTTPException(status_code=429, detail="Too many attempts. Try again in 15 minutes.")
+        raise _too_many_attempts((record.blocked_until - now).total_seconds())
     if record and now - record.window_start >= AUTH_FAILURE_WINDOW:
         record.failures = 0
         record.window_start = now
@@ -379,7 +398,7 @@ async def _reserve_auth_attempt(db: AsyncSession, key: str) -> None:
             .execution_options(synchronize_session=False)
         )
         await db.commit()
-        raise HTTPException(status_code=429, detail="Too many attempts. Try again in 15 minutes.")
+        raise _too_many_attempts(AUTH_LOCKOUT.total_seconds())
 
 
 async def _record_auth_failure(db: AsyncSession, key: str) -> None:

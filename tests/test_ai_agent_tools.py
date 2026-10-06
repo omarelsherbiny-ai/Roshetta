@@ -21,7 +21,6 @@ from fastapi.testclient import TestClient
 
 from server.app.main import app
 from server.app.services.ai_prompt import (
-    SYSTEM_PROMPT,
     TOOL_GUIDE,
     TOOL_SCOPES,
     allowed_tools,
@@ -121,11 +120,12 @@ class AiAgentToolsTests(unittest.TestCase):
                 for parameter in op.get("parameters", []):
                     self.assertNotIn(parameter["name"].lower(), DENIED_NAMES, f"{method} {path}")
         posts = [(m, p) for m, p, _ in operations if m != "get"]
-        self.assertEqual(posts, [("post", "/match")])
+        self.assertEqual(sorted(posts), [("post", "/match"), ("post", "/propose-category"), ("post", "/propose-invite"), ("post", "/propose-product"), ("post", "/propose-product-update"), ("post", "/propose-restock")])
         ids = {op["operationId"] for _, _, op in operations}
-        for new_tool in ("get_sales_summary", "get_inventory_summary", "list_low_stock", "list_categories",
+        for new_tool in ("get_sales_summary", "get_inventory_summary", "list_categories",
                          "get_item_price_history", "list_records_timeline", "list_roles"):
             self.assertIn(new_tool, ids)
+        self.assertNotIn("list_low_stock", ids)
 
     def test_prompt_tool_table_matches_every_ai_operation(self):
         spec = self.client.get("/ai/openapi.json").json()
@@ -133,12 +133,7 @@ class AiAgentToolsTests(unittest.TestCase):
         self.assertEqual(set(TOOL_SCOPES), ids)
         self.assertEqual(set(TOOL_GUIDE), ids)
 
-    # ---- the fixed prompt ----
-    def test_prompt_states_the_fixed_rules(self):
-        lowered = SYSTEM_PROMPT.lower()
-        for needle in ("arabic", "egp", "cairo", "never invent", "at most three", "you never change data"):
-            self.assertIn(needle, lowered)
-
+    # ---- the question (the prompt lives in the MicroMind website, not in code) ----
     def test_question_lists_only_the_tools_the_member_may_use(self):
         owner = self.register_owner("Prompt Pharmacy")
         sales_only = self.custom_member(owner, ["log_sale"], "Sales Only")
@@ -152,10 +147,9 @@ class AiAgentToolsTests(unittest.TestCase):
         self.assertNotIn("get_sales_summary", limited)
         self.assertIn("get_my_activity", limited)
         question = build_agent_question("how many?", "English", "custom", identity_scopes)
-        self.assertTrue(question.startswith(SYSTEM_PROMPT))
-        self.assertIn("- get_my_activity:", question)
-        self.assertNotIn("- list_roles:", question)
-        self.assertTrue(question.endswith("Answer in English.\nUser question:\nhow many?"))
+        # Session 126: the user message is only the question (no language line, no prompt, no
+        # tool list); the model answers in the question's language.
+        self.assertEqual(question, "how many?")
         self.assertTrue(sales_only["token"])
 
     def test_every_tool_is_allowed_exactly_when_the_endpoint_answers_not_403(self):
@@ -167,7 +161,6 @@ class AiAgentToolsTests(unittest.TestCase):
             "match_product": ("post", "/ai/match", {"query_name": "Agent"}),
             "get_item_batches": ("get", f"/ai/items/{item_id}/batches", None),
             "get_item_price_history": ("get", f"/ai/items/{item_id}/price-history", None),
-            "list_low_stock": ("get", "/ai/low-stock", None),
             "list_categories": ("get", "/ai/categories", None),
             "get_inventory_summary": ("get", "/ai/inventory/summary", None),
             "list_ledger_entries": ("get", "/ai/entries", None),
@@ -177,6 +170,12 @@ class AiAgentToolsTests(unittest.TestCase):
             "list_records_timeline": ("get", "/ai/timeline", None),
             "get_my_activity": ("get", "/ai/activity", None),
             "list_roles": ("get", "/ai/roles", None),
+            "get_pharmacy_summary": ("get", "/ai/pharmacy-summary", None),
+            "propose_product": ("post", "/ai/propose-product", {"name": "Scope Table Cetal", "unit_sell_price": 15}),
+            "propose_category": ("post", "/ai/propose-category", {"name": "Scope Table Category"}),
+            "propose_product_update": ("post", "/ai/propose-product-update", {"item_id": item_id, "unit_sell_price": 99}),
+            "propose_restock": ("post", "/ai/propose-restock", {"item_id": item_id, "quantity": 5}),
+            "propose_invite": ("post", "/ai/propose-invite", {"role_name": "viewer"}),
         }
         self.assertEqual(set(calls), set(TOOL_SCOPES))
         members = {
@@ -203,11 +202,6 @@ class AiAgentToolsTests(unittest.TestCase):
         item_id = self.make_product(owner, category="Pain relief")
         headers = self.ai_headers(owner)
         day = date.today().isoformat()
-
-        low = self.client.get("/ai/low-stock", headers=headers)
-        self.assertEqual(low.status_code, 200, low.text)
-        self.assertEqual([row["id"] for row in low.json()], [item_id])
-        self.assertNotIn("unit_buy_price", low.json()[0])
 
         categories = self.client.get("/ai/categories", headers=headers).json()
         self.assertEqual(categories, [{"name": "Pain relief", "item_count": 1}])
@@ -261,7 +255,6 @@ class AiAgentToolsTests(unittest.TestCase):
         second = self.register_owner("Isolation Two")
         item_id = self.make_product(first, category="Isolated")
         headers = self.ai_headers(second)
-        self.assertEqual(self.client.get("/ai/low-stock", headers=headers).json(), [])
         self.assertEqual(self.client.get("/ai/categories", headers=headers).json(), [])
         self.assertEqual(self.client.get("/ai/inventory/summary", headers=headers).json()["item_count"], 0)
         self.assertEqual(self.client.get(f"/ai/items/{item_id}/price-history", headers=headers).status_code, 404)
@@ -272,8 +265,6 @@ class AiAgentToolsTests(unittest.TestCase):
         owner = self.register_owner("Bad Arguments Pharmacy")
         headers = self.ai_headers(owner)
         for path in (
-            "/ai/low-stock?limit=0",
-            "/ai/low-stock?limit=51",
             "/ai/items/0/price-history",
             "/ai/timeline?limit=0",
             "/ai/timeline?offset=1001",
@@ -283,7 +274,7 @@ class AiAgentToolsTests(unittest.TestCase):
         ):
             response = self.client.get(path, headers=headers)
             self.assertEqual(response.status_code, 422, f"{path}: {response.text}")
-        self.assertEqual(self.client.get("/ai/low-stock").status_code, 401)
+        self.assertEqual(self.client.get("/ai/categories").status_code, 401)
 
     def test_ai_token_is_refused_on_the_main_api_and_accepted_on_ai(self):
         owner = self.register_owner("Audience Pharmacy")
@@ -292,7 +283,7 @@ class AiAgentToolsTests(unittest.TestCase):
         self.assertEqual(self.client.get("/ai/categories", headers=ai_headers).status_code, 200)
 
     # ---- chat: fixed prompt and fallback ----
-    def test_agent_path_sends_the_fixed_prompt_and_a_failed_agent_gets_a_plain_note(self):
+    def test_agent_path_sends_only_the_question_and_a_failed_agent_gets_a_plain_note(self):
         owner = self.register_owner("Agent Chat Pharmacy")
         headers = self.auth(owner["token"])
         with patch("server.app.api.chat.settings.AI_TOOLS_ENABLED", True), \
@@ -303,19 +294,17 @@ class AiAgentToolsTests(unittest.TestCase):
             self.assertEqual(ok.status_code, 200, ok.text)
             self.assertEqual(ok.json()["text"], "Agent answer.")
             question, token = agent.await_args.args
-            self.assertTrue(question.startswith(SYSTEM_PROMPT))
-            self.assertIn("Tools you may use now:", question)
-            self.assertIn("- list_roles:", question)
-            self.assertTrue(question.endswith("Answer in English.\nUser question:\nhello"))
+            self.assertEqual(question, "hello")
+            self.assertNotIn("Tools you may use now:", question)
             self.assertEqual(decode_access_token(token)["audience"], "ai")
             self.assertNotIn(token, question)
 
             agent.return_value = None
             failed = self.client.post("/api/chat", headers=headers, json={"text": "hello", "language": "en"})
             self.assertEqual(failed.status_code, 200, failed.text)
-            self.assertIn("could not be reached", failed.json()["text"])
+            self.assertIn("did not answer", failed.json()["text"])
             failed_ar = self.client.post("/api/chat", headers=headers, json={"text": "hello", "language": "ar"})
-            self.assertIn("تعذّر", failed_ar.json()["text"])
+            self.assertIn("لم يرد المساعد", failed_ar.json()["text"])
 
     def test_agent_failure_adds_no_note_while_micromind_is_off(self):
         owner = self.register_owner("Agent Off Pharmacy")
@@ -325,7 +314,7 @@ class AiAgentToolsTests(unittest.TestCase):
                 "/api/chat", headers=self.auth(owner["token"]), json={"text": "hello", "language": "en"},
             )
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertNotIn("could not be reached", response.json()["text"])
+        self.assertNotIn("did not answer", response.json()["text"])
 
 
 if __name__ == "__main__":

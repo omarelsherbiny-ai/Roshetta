@@ -1,5 +1,6 @@
 # server/app/main.py
 from contextlib import asynccontextmanager
+from typing import Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -17,6 +18,8 @@ from server.app.api.staff import router as staff_router
 from server.app.api.me import router as me_router
 from server.app.api.ai import create_ai_app
 from server.app.services.security import validate_auth_configuration
+from server.app.db.openapi_money import normalize_money_schema
+from server.app.services.micromind import micromind_client
 
 
 @asynccontextmanager
@@ -37,6 +40,7 @@ class HealthResponse(BaseModel):
     app: str
     micromind_configured: bool
     micromind_enabled: bool
+    micromind_last_error: Optional[str] = None
     ocr_available: bool
     version: str
 
@@ -55,7 +59,20 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # The browser may read Retry-After on a 429 (the change-PIN screen shows the real wait).
+    expose_headers=["Retry-After"],
 )
+
+# FastAPI caches the schema; the fix only renames leaked money bounds and is idempotent,
+# so /docs, /openapi.json and scripts/export_openapi.py all see the same standard keys.
+_default_openapi = app.openapi
+
+
+def _openapi_with_standard_bounds() -> dict:
+    return normalize_money_schema(_default_openapi())
+
+
+app.openapi = _openapi_with_standard_bounds
 
 # Include Routers
 app.include_router(chat_router)
@@ -81,6 +98,8 @@ async def health_check():
         "app": "Roshetta",
         "micromind_configured": bool(settings.MICROMIND_API_URL),
         "micromind_enabled": bool(settings.USE_MICROMIND and settings.MICROMIND_API_URL),
+        # Why the last MicroMind call failed (kind and status only, no text); null when it worked.
+        "micromind_last_error": micromind_client.status_text(),
         "ocr_available": False,
         "version": settings.VERSION
     }

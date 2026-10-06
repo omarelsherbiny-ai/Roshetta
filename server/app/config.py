@@ -35,11 +35,24 @@ class Settings(BaseSettings):
     AI_TOOLS_ENABLED: bool = False
     # A tool-using answer takes longer than a plain one (the flow calls /ai through the tunnel).
     AI_AGENT_TIMEOUT_SECONDS: float = 25.0
+    # A plain inventory read (list, low stock) is answered from data the server already
+    # loaded, in ONE short model turn with no tool call (chat.py, inventory_prefetch.py).
+    # Only used while AI_TOOLS_ENABLED is on, and it sends the same fields the /ai tools
+    # return (no buy prices, no ids). OFF by default (Omar, Session 125: the model must use
+    # the tools itself); set True to try the one-turn path.
+    AI_PREFETCH_READS: bool = False
+    # Debug only (Session 125): print the raw 5 minute per-message AI token in the backend
+    # console, next to its fingerprint, so it can be compared with ROSHETTA_TOKEN in the
+    # AiMicroMind Variables page. Keep False otherwise: a pasted log would hold a live token.
+    AI_DEBUG_PRINT_TOKEN: bool = False
 
     # /api/chat rate limit per user and pharmacy. Counted in memory by each server
     # process, so with several workers the real ceiling is messages x workers.
     CHAT_RATE_LIMIT_MESSAGES: int = Field(default=20, ge=1)
     CHAT_RATE_LIMIT_WINDOW_SECONDS: float = Field(default=60.0, gt=0)
+    # /ai tool calls per user and pharmacy in the same window. 0 (default) means
+    # CHAT_RATE_LIMIT_MESSAGES x 5 (the assistant may call several tools per message).
+    AI_RATE_LIMIT_CALLS: int = Field(default=0, ge=0)
 
     # How long an assistant proposal (sale, expense, restock) stays confirmable. A proposal keeps
     # the prices it was drafted with, so an old one is refused at confirm and hidden from the

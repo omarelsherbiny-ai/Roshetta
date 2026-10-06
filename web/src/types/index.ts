@@ -132,9 +132,14 @@ export type ActionType =
   | 'log_sale'
   | 'log_expense'
   | 'log_restock'
+  | 'create_product'
+  | 'update_product'
+  | 'create_category'
+  | 'create_invite'
   | 'prescription_scan'
   | 'invoice_scan'
   | 'query'
+  | 'reduce_stock'
   | 'general_chat';
 
 export type ActionStatus =
@@ -183,6 +188,17 @@ export type StaffPayType = 'monthly' | 'hourly' | 'daily' | 'commission' | 'othe
 export type StaffCompensationRecord = StaffCompensationResponse;
 export type StaffCompensationInput = CompensationInput;
 
+/** Product data of a `create_product` proposal (server: ProductDraftResponse). */
+export interface ProductDraft {
+  name_ar: string;
+  name_en: string;
+  unit_buy_price: number;
+  unit_sell_price: number;
+  stock_qty: number;
+  min_threshold: number;
+  category?: string | null;
+}
+
 export interface ActionProposal {
   id: string;
   action_type: ActionType;
@@ -197,6 +213,14 @@ export interface ActionProposal {
   raw_text?: string | null;
   source_image_url?: string | null;
   warnings?: string[];
+  product?: ProductDraft | null;
+  /** `update_product`: the values now, and the names of the fields the card changes. */
+  before?: Record<string, unknown> | null;
+  changed_fields?: string[] | null;
+  /** `create_category`: the name the card will create. */
+  category_name?: string | null;
+  /** `reduce_stock`: the count now, the count after the change and the difference. */
+  stock_change?: { item_name: string; before: number; after: number; difference: number; reason?: string | null } | null;
 }
 
 export interface DrugInteractionAlert {

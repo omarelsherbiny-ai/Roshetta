@@ -17,6 +17,7 @@ from sqlalchemy.future import select
 from server.app.db.models import (
     AuditLog, LedgerEntry, LedgerEntryItem, PharmacyMember, User,
 )
+from server.app.db.money import round_money
 from server.app.db.session import get_db
 from server.app.services.rbac import get_current_identity
 from server.app.services.financials import BUSINESS_TIMEZONE, local_day_bounds_utc
@@ -368,11 +369,11 @@ async def get_my_activity(
         "sales_count": counts["log_sale"],
         "expenses_count": counts["log_expense"],
         "restocks_count": counts["log_restock"],
-        "total_restock": round(amounts["log_restock"], 2),
-        "total_sales": round(total_sales, 2),
-        "total_expenses": round(total_expenses, 2),
+        "total_restock": round_money(amounts["log_restock"]),
+        "total_sales": round_money(total_sales),
+        "total_expenses": round_money(total_expenses),
         "items_sold": item_quantities["log_sale"],
         "items_restocked": item_quantities["log_restock"],
-        "net": round(total_sales - total_expenses, 2),
+        "net": round_money(total_sales - total_expenses),
         "recent_entries": recent_entries,
     }

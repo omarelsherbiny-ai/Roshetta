@@ -1258,7 +1258,7 @@ class PharmacyAPISecurityTests(unittest.TestCase):
 
         summary = self.client.get("/api/ledger/daily-summary", headers=headers)
         self.assertEqual(summary.status_code, 200, summary.text)
-        self.assertEqual(summary.json()["total_sales"], 35)
+        self.assertEqual(summary.json()["total_sales"], 50)
         self.assertFalse(summary.json()["profit_complete"])
         self.assertIsNone(summary.json()["cost_of_goods"])
         self.assertIsNone(summary.json()["gross_profit"])

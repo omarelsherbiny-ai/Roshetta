@@ -14,6 +14,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
 from server.app.db.models import AuditLog, PharmacyMember, PharmacyOwnershipSlot, PharmacyProfile, RevokedAccessToken, User, ROLE_PERMISSIONS, has_permission
+from server.app.db.money import round_money
 from server.app.db.session import get_db
 from server.app.services.rbac import get_current_identity
 from server.app.services.clock import utc_from_timestamp_naive, utc_now_naive
@@ -348,7 +349,7 @@ async def get_pharmacy_summary(
         if membership.role == "cashier":
             revenue_filters.append(func.coalesce(LedgerEntry.confirmed_by, LedgerEntry.created_by) == ctx["user_id"])
         rev_res = await db.execute(select(func.sum(LedgerEntry.total_amount)).where(*revenue_filters))
-        today_revenue = round(float(rev_res.scalar_one() or 0), 2)
+        today_revenue = round_money(rev_res.scalar_one() or 0)
 
     return {
         "pharmacy_id": pharmacy_id,

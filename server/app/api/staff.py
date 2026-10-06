@@ -500,7 +500,7 @@ async def deactivate_role(pharmacy_id: int, role_id: int, db: AsyncSession = Dep
     role = result.scalars().first()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found.")
-    assigned = await db.execute(select(func.count(PharmacyMember.id)).where(PharmacyMember.custom_role_id == role_id, PharmacyMember.is_active.is_(True)))
+    assigned = await db.execute(select(func.count(PharmacyMember.id)).where(PharmacyMember.pharmacy_id == pharmacy_id, PharmacyMember.custom_role_id == role_id, PharmacyMember.is_active.is_(True)))
     if assigned.scalar_one():
         raise HTTPException(status_code=409, detail="Reassign active staff before removing this role.")
     role.is_active = False

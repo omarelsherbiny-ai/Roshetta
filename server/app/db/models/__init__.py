@@ -6,6 +6,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from server.app.db.session import Base
+from server.app.db.money import Money
 
 
 # ─────────────────────────────────────────────────────────────
@@ -260,8 +261,8 @@ class InventoryItem(Base):
     category         = Column(String(50), nullable=True)
     stock_qty        = Column(Float,      default=0.0)
     min_threshold    = Column(Float,      default=5.0)
-    unit_buy_price   = Column(Float,      default=0.0)
-    unit_sell_price  = Column(Float,      default=0.0)
+    unit_buy_price   = Column(Money(12, 2), default=0.0)
+    unit_sell_price  = Column(Money(12, 2), default=0.0)
     expiry_date      = Column(String(20), nullable=True)
     created_at       = Column(DateTime,   default=utc_now_naive)
 
@@ -295,8 +296,8 @@ class InventoryBatch(Base):
     item_id         = Column(Integer, ForeignKey("inventory.id", ondelete="CASCADE"), nullable=False, index=True)
     batch_number    = Column(String(60), nullable=True)
     quantity        = Column(Float, nullable=False, default=0.0)
-    unit_buy_price  = Column(Float, nullable=False, default=0.0)
-    unit_sell_price = Column(Float, nullable=False, default=0.0)
+    unit_buy_price  = Column(Money(12, 2), nullable=False, default=0.0)
+    unit_sell_price = Column(Money(12, 2), nullable=False, default=0.0)
     expiry_date     = Column(String(20), nullable=True)
     created_at      = Column(DateTime, default=utc_now_naive)
     updated_at      = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
@@ -311,10 +312,10 @@ class InventoryPriceHistory(Base):
     id                       = Column(Integer, primary_key=True, index=True)
     pharmacy_id              = Column(Integer, ForeignKey("pharmacy_profile.id"), nullable=False, index=True)
     item_id                  = Column(Integer, ForeignKey("inventory.id"), nullable=False, index=True)
-    previous_unit_buy_price  = Column(Float, nullable=True)
-    previous_unit_sell_price = Column(Float, nullable=True)
-    unit_buy_price           = Column(Float, nullable=False)
-    unit_sell_price          = Column(Float, nullable=False)
+    previous_unit_buy_price  = Column(Money(12, 2), nullable=True)
+    previous_unit_sell_price = Column(Money(12, 2), nullable=True)
+    unit_buy_price           = Column(Money(12, 2), nullable=False)
+    unit_sell_price          = Column(Money(12, 2), nullable=False)
     changed_by               = Column(Integer, ForeignKey("users.id"), nullable=False)
     recorded_at              = Column(DateTime, nullable=False, default=utc_now_naive)
 
@@ -328,7 +329,7 @@ class LedgerEntry(Base):
     id             = Column(String(50), primary_key=True, index=True)
     pharmacy_id    = Column(Integer,    ForeignKey("pharmacy_profile.id"), nullable=True)
     entry_type     = Column(String(20), nullable=False)   # log_sale|log_expense|log_restock
-    total_amount   = Column(Float,      nullable=False)
+    total_amount   = Column(Money(18, 2), nullable=False)
     payment_method = Column(String(20), default="cash")   # cash|card|credit
     notes          = Column(Text,       nullable=True)
     supplier_name  = Column(String(150), nullable=True)   # free text; restocks only
@@ -348,9 +349,11 @@ class LedgerEntryItem(Base):
     item_id    = Column(Integer,    ForeignKey("inventory.id"), nullable=True)
     item_name  = Column(String(150),nullable=False)
     quantity   = Column(Float,      nullable=False)
-    unit_price = Column(Float,      nullable=False)
-    unit_cost  = Column(Float,      nullable=True)  # cost snapshot for gross-profit reporting
-    subtotal   = Column(Float,      nullable=False)
+    unit_price = Column(Money(12, 2), nullable=False)
+    # Cost snapshot for gross-profit reporting: a weighted average over FIFO lots, so it
+    # keeps 6 places (2 places would shift cost of goods by up to half a piaster per unit).
+    unit_cost  = Column(Money(18, 6), nullable=True)
+    subtotal   = Column(Money(18, 2), nullable=False)
 
     entry = relationship("LedgerEntry", back_populates="items")
 
@@ -366,7 +369,7 @@ class RestockSettlement(Base):
     id             = Column(Integer,    primary_key=True, index=True)
     pharmacy_id    = Column(Integer,    ForeignKey("pharmacy_profile.id"), nullable=False, index=True)
     entry_id       = Column(String(50), ForeignKey("entries.id"), nullable=False, index=True)
-    amount         = Column(Float,      nullable=False)
+    amount         = Column(Money(18, 2), nullable=False)
     payment_method = Column(String(20), nullable=False)   # cash|card
     paid_by        = Column(Integer,    ForeignKey("users.id"), nullable=False)
     paid_at        = Column(DateTime,   nullable=False, default=utc_now_naive)

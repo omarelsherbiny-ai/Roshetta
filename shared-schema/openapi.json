@@ -4442,6 +4442,60 @@
             ],
             "title": "Edited Items"
           },
+          "product": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductDraftModel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "allow_duplicate": {
+            "type": "boolean",
+            "title": "Allow Duplicate",
+            "default": false
+          },
+          "category_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Name"
+          },
+          "expires_in_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 30.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires In Days"
+          },
+          "max_uses": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 50.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Uses"
+          },
           "payment_method": {
             "anyOf": [
               {
@@ -4480,7 +4534,11 @@
             "enum": [
               "log_sale",
               "log_expense",
-              "log_restock"
+              "log_restock",
+              "create_product",
+              "create_category",
+              "update_product",
+              "create_invite"
             ],
             "title": "Action Type"
           },
@@ -4565,6 +4623,105 @@
             },
             "type": "array",
             "title": "Warnings"
+          },
+          "product": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductDraftResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "duplicates": {
+            "items": {
+              "$ref": "#/components/schemas/DuplicateProductResponse"
+            },
+            "type": "array",
+            "title": "Duplicates"
+          },
+          "created_item_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created Item Id"
+          },
+          "category_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Name"
+          },
+          "target_item_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Item Id"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductDraftResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "changed_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Changed Fields"
+          },
+          "invite": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InviteDraftResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "join_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Join Path"
+          },
+          "invite_expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invite Expires At"
           }
         },
         "type": "object",
@@ -5092,8 +5249,8 @@
             "anyOf": [
               {
                 "type": "number",
-                "maximum": 100000000.0,
-                "minimum": 0.0
+                "minimum": 0.0,
+                "maximum": 100000000.0
               },
               {
                 "type": "null"
@@ -5168,6 +5325,48 @@
           "quantity"
         ],
         "title": "DirectRestockPayload"
+      },
+      "DuplicateProductResponse": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "name_ar": {
+            "type": "string",
+            "title": "Name Ar",
+            "default": ""
+          },
+          "name_en": {
+            "type": "string",
+            "title": "Name En",
+            "default": ""
+          },
+          "stock_qty": {
+            "type": "number",
+            "title": "Stock Qty",
+            "default": 0.0
+          },
+          "unit_sell_price": {
+            "type": "number",
+            "title": "Unit Sell Price",
+            "default": 0.0
+          },
+          "exact": {
+            "type": "boolean",
+            "title": "Exact",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "DuplicateProductResponse"
       },
       "FinancialSummaryResponse": {
         "properties": {
@@ -5291,6 +5490,17 @@
           "micromind_enabled": {
             "type": "boolean",
             "title": "Micromind Enabled"
+          },
+          "micromind_last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Micromind Last Error"
           },
           "ocr_available": {
             "type": "boolean",
@@ -5901,6 +6111,56 @@
           "success"
         ],
         "title": "InvitationRevokedResponse"
+      },
+      "InviteDraftResponse": {
+        "properties": {
+          "role_name": {
+            "type": "string",
+            "title": "Role Name"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "default": "built_in"
+          },
+          "fixed_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixed Role"
+          },
+          "custom_role_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Role Id"
+          },
+          "expires_in_days": {
+            "type": "integer",
+            "title": "Expires In Days",
+            "default": 7
+          },
+          "max_uses": {
+            "type": "integer",
+            "title": "Max Uses",
+            "default": 1
+          }
+        },
+        "type": "object",
+        "required": [
+          "role_name"
+        ],
+        "title": "InviteDraftResponse"
       },
       "ItemCategoryPayload": {
         "properties": {
@@ -7554,6 +7814,152 @@
           "reviewed_at"
         ],
         "title": "PrescriptionReviewResponse"
+      },
+      "ProductDraftModel": {
+        "properties": {
+          "name_ar": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 150,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name Ar"
+          },
+          "name_en": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 150,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name En"
+          },
+          "unit_buy_price": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 100000000.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Buy Price"
+          },
+          "unit_sell_price": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100000000.0,
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Sell Price"
+          },
+          "stock_qty": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1000000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Qty"
+          },
+          "min_threshold": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1000000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Threshold"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 50
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          }
+        },
+        "type": "object",
+        "title": "ProductDraftModel",
+        "description": "Edits the person may make on an add-product card before confirming."
+      },
+      "ProductDraftResponse": {
+        "properties": {
+          "name_ar": {
+            "type": "string",
+            "title": "Name Ar"
+          },
+          "name_en": {
+            "type": "string",
+            "title": "Name En"
+          },
+          "unit_buy_price": {
+            "type": "number",
+            "title": "Unit Buy Price"
+          },
+          "unit_sell_price": {
+            "type": "number",
+            "title": "Unit Sell Price"
+          },
+          "stock_qty": {
+            "type": "number",
+            "title": "Stock Qty",
+            "default": 0.0
+          },
+          "min_threshold": {
+            "type": "number",
+            "title": "Min Threshold",
+            "default": 5.0
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name_ar",
+          "name_en",
+          "unit_buy_price",
+          "unit_sell_price"
+        ],
+        "title": "ProductDraftResponse"
       },
       "ProductMutationResponse": {
         "properties": {

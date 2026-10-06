@@ -37,12 +37,17 @@ export interface components {
   };
     "ActionConfirmRequest": {
     "edited_items"?: (Array<components["schemas"]["ProposedItemModel"]>) | (null);
+    "product"?: (components["schemas"]["ProductDraftModel"]) | (null);
+    "allow_duplicate"?: boolean;
+    "category_name"?: (string) | (null);
+    "expires_in_days"?: (number) | (null);
+    "max_uses"?: (number) | (null);
     "payment_method"?: (string) | (null);
     "notes"?: (string) | (null);
   };
     "ActionProposalResponse": {
     "id": string;
-    "action_type": "log_sale" | "log_expense" | "log_restock";
+    "action_type": "log_sale" | "log_expense" | "log_restock" | "create_product" | "create_category" | "update_product" | "create_invite";
     "title": string;
     "summary_ar": string;
     "summary_en": string;
@@ -55,6 +60,16 @@ export interface components {
     "raw_text"?: (string) | (null);
     "source_image_url"?: (string) | (null);
     "warnings"?: Array<string>;
+    "product"?: (components["schemas"]["ProductDraftResponse"]) | (null);
+    "duplicates"?: Array<components["schemas"]["DuplicateProductResponse"]>;
+    "created_item_id"?: (number) | (null);
+    "category_name"?: (string) | (null);
+    "target_item_id"?: (number) | (null);
+    "before"?: (components["schemas"]["ProductDraftResponse"]) | (null);
+    "changed_fields"?: Array<string>;
+    "invite"?: (components["schemas"]["InviteDraftResponse"]) | (null);
+    "join_path"?: (string) | (null);
+    "invite_expires_at"?: (string) | (null);
   };
     "ActivityEntryResponse": {
     "id": string;
@@ -151,6 +166,14 @@ export interface components {
     "supplier_notes"?: (string) | (null);
     "supplier_name"?: (string) | (null);
   };
+    "DuplicateProductResponse": {
+    "id"?: (number) | (null);
+    "name_ar"?: string;
+    "name_en"?: string;
+    "stock_qty"?: number;
+    "unit_sell_price"?: number;
+    "exact"?: boolean;
+  };
     "FinancialSummaryResponse": {
     "date": string;
     "total_sales": number;
@@ -173,6 +196,7 @@ export interface components {
     "app": string;
     "micromind_configured": boolean;
     "micromind_enabled": boolean;
+    "micromind_last_error"?: (string) | (null);
     "ocr_available": boolean;
     "version": string;
   };
@@ -268,6 +292,14 @@ export interface components {
   };
     "InvitationRevokedResponse": {
     "success": boolean;
+  };
+    "InviteDraftResponse": {
+    "role_name": string;
+    "kind"?: string;
+    "fixed_role"?: (string) | (null);
+    "custom_role_id"?: (number) | (null);
+    "expires_in_days"?: number;
+    "max_uses"?: number;
   };
     "ItemCategoryPayload": {
     "category": string;
@@ -517,6 +549,24 @@ export interface components {
     "id": string;
     "review_decision": "reviewed" | "held";
     "reviewed_at": string;
+  };
+    "ProductDraftModel": {
+    "name_ar"?: (string) | (null);
+    "name_en"?: (string) | (null);
+    "unit_buy_price"?: (number) | (null);
+    "unit_sell_price"?: (number) | (null);
+    "stock_qty"?: (number) | (null);
+    "min_threshold"?: (number) | (null);
+    "category"?: (string) | (null);
+  };
+    "ProductDraftResponse": {
+    "name_ar": string;
+    "name_en": string;
+    "unit_buy_price": number;
+    "unit_sell_price": number;
+    "stock_qty"?: number;
+    "min_threshold"?: number;
+    "category"?: (string) | (null);
   };
     "ProductMutationResponse": {
     "success": boolean;
@@ -773,6 +823,7 @@ export type CompensationInput = components["schemas"]["CompensationInput"];
 export type ConfirmedActionResponse = components["schemas"]["ConfirmedActionResponse"];
 export type CreatePharmacyResponse = components["schemas"]["CreatePharmacyResponse"];
 export type DirectRestockPayload = components["schemas"]["DirectRestockPayload"];
+export type DuplicateProductResponse = components["schemas"]["DuplicateProductResponse"];
 export type FinancialSummaryResponse = components["schemas"]["FinancialSummaryResponse"];
 export type FixedRoleAssignment = components["schemas"]["FixedRoleAssignment"];
 export type HTTPValidationError = components["schemas"]["HTTPValidationError"];
@@ -788,6 +839,7 @@ export type InvitationCreate = components["schemas"]["InvitationCreate"];
 export type InvitationCreatedResponse = components["schemas"]["InvitationCreatedResponse"];
 export type InvitationResponse = components["schemas"]["InvitationResponse"];
 export type InvitationRevokedResponse = components["schemas"]["InvitationRevokedResponse"];
+export type InviteDraftResponse = components["schemas"]["InviteDraftResponse"];
 export type ItemCategoryPayload = components["schemas"]["ItemCategoryPayload"];
 export type LedgerEntryResponse = components["schemas"]["LedgerEntryResponse"];
 export type LedgerLineResponse = components["schemas"]["LedgerLineResponse"];
@@ -819,6 +871,8 @@ export type PhotoUploadResponse = components["schemas"]["PhotoUploadResponse"];
 export type PrescriptionRecordResponse = components["schemas"]["PrescriptionRecordResponse"];
 export type PrescriptionReviewRequest = components["schemas"]["PrescriptionReviewRequest"];
 export type PrescriptionReviewResponse = components["schemas"]["PrescriptionReviewResponse"];
+export type ProductDraftModel = components["schemas"]["ProductDraftModel"];
+export type ProductDraftResponse = components["schemas"]["ProductDraftResponse"];
 export type ProductMutationResponse = components["schemas"]["ProductMutationResponse"];
 export type ProductPayload = components["schemas"]["ProductPayload"];
 export type ProductUpdatePayload = components["schemas"]["ProductUpdatePayload"];

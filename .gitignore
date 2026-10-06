@@ -43,3 +43,6 @@ Thumbs.db
 # Uploaded documents (local cache)
 uploads/
 storage/
+
+agent.py
+opencode.json

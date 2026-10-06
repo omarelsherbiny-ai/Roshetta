@@ -1,0 +1,24 @@
+"""Fix tests/test_invite_confirm.py: the creator-only test compared the owner's
+invitation list with [] but the custom_member helper itself uses up one invitation.
+Run from the project root:  python scripts/patch_invite_confirm_test.py
+(copy this file into scripts/ first). Safe to run twice."""
+import re, sys
+from pathlib import Path
+
+path = Path("tests/test_invite_confirm.py")
+src = path.read_text(encoding="utf-8")
+name = "test_only_the_member_who_prepared_the_card_can_see_confirm_or_cancel_it"
+m = re.search(rf"    def {name}\(self\):\n(.*?)(?=\n    def |\Z)", src, re.S)
+if not m:
+    sys.exit("test not found")
+body = m.group(1)
+if "invites_before" in body:
+    sys.exit("already patched")
+anchor = '        proposal_id = self.card(owner, "viewer")\n'
+last = "        self.assertEqual(self.invitations(owner), [])"
+if anchor not in body or last not in body:
+    sys.exit("expected lines not found; send the test and I will patch by hand")
+new = body.replace(anchor, anchor + "        invites_before = self.invitations(owner)\n", 1)
+new = new.replace(last, "        self.assertEqual(self.invitations(owner), invites_before)", 1)
+path.write_text(src.replace(body, new, 1), encoding="utf-8")
+print("patched", name)

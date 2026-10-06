@@ -9,8 +9,9 @@ import { useLanguage } from '@/lib/i18n';
 
 const PIN_MIN = 4;
 const PIN_MAX = 6;
-/** The server blocks a key for 15 minutes; it sends no Retry-After, so the form stays locked for the same time here. */
-const LOCK_MS = 15 * 60 * 1000;
+/** The server blocks a key for 15 minutes. The form locks for the server's Retry-After when the browser can read it, otherwise for this long. */
+const DEFAULT_LOCK_MS = 15 * 60 * 1000;
+const MAX_LOCK_MS = 60 * 60 * 1000;
 
 type FieldName = 'current' | 'next' | 'confirm';
 type Notice = { kind: 'error' | 'warning'; message: string; retry?: () => void } | null;
@@ -160,10 +161,11 @@ export function ChangePinCard() {
         setLocked(true);
         setNotice({ kind: 'warning', message: t('cp_throttled') });
         if (lockTimer.current) clearTimeout(lockTimer.current);
+        const serverMs = error instanceof PinChangeError && error.retryAfterSeconds ? error.retryAfterSeconds * 1000 : DEFAULT_LOCK_MS;
         lockTimer.current = setTimeout(() => {
           setLocked(false);
           setNotice(null);
-        }, LOCK_MS);
+        }, Math.min(serverMs, MAX_LOCK_MS));
       } else {
         setNotice({
           kind: 'error',

@@ -23,6 +23,12 @@ DENIED_ARGUMENT_NAMES = {
 
 _MAX_REF_DEPTH = 8
 
+# The toolkit checks the arguments of every POST tool against a schema whose only required
+# property is `RequestBody` (an object holding the JSON body). Models often send the body
+# fields at the top level and the call fails before it reaches the server (Session 127), so the
+# rule is stated where the model reads the tool: in the summary and the request-body text.
+REQUEST_BODY_HINT = "Send the fields inside one object named RequestBody."
+
 
 def _deref(node: Any, components: dict, depth: int = 0) -> Any:
     if depth > _MAX_REF_DEPTH:
@@ -102,7 +108,12 @@ def toolkit_spec(raw: dict) -> dict:
                 for name in schema.get("properties", {}):
                     if name.lower() in DENIED_ARGUMENT_NAMES:
                         raise ValueError(f"{method.upper()} {path} body exposes '{name}'.")
+                summary = str(cleaned["summary"]).rstrip()
+                if summary and summary[-1] not in ".!?":
+                    summary += "."
+                cleaned["summary"] = (summary + " " + REQUEST_BODY_HINT).strip()
                 cleaned["requestBody"] = {
+                    "description": REQUEST_BODY_HINT,
                     "required": True,
                     "content": {"application/json": {"schema": schema}},
                 }

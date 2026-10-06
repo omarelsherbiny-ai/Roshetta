@@ -14,12 +14,13 @@ Rules baked in:
 - Result sizes are capped.
 """
 
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -37,9 +38,11 @@ from server.app.api.ledger import (
     payables_summary,
 )
 from server.app.api.me import get_my_activity
+from server.app.api.ai_propose import propose_router
 from server.app.api.staff import list_roles
-from server.app.db.models import InventoryBatch, InventoryItem
+from server.app.db.models import InventoryBatch, InventoryItem, has_permission
 from server.app.db.session import get_db
+from server.app.services.fuzzy_match import rank_matches
 from server.app.services.rate_limit import ai_limiter
 from server.app.services.rbac import (
     get_current_identity,
@@ -68,6 +71,17 @@ async def ai_rate_limit(ctx: dict = Depends(get_current_user)) -> None:
 
 
 router = APIRouter(dependencies=[Depends(ai_rate_limit)])
+
+# Days are Cairo days (the same zone the ledger and the staff schedules use).
+CAIRO = ZoneInfo("Africa/Cairo")
+# How far ahead "expiring soon" looks when the caller does not say. A product's catalog
+# expiry is the earliest expiry among its lots with stock (ISO YYYY-MM-DD text), so a text
+# comparison with an ISO cutoff is a date comparison.
+EXPIRY_WINDOW_DEFAULT_DAYS = 30
+
+
+def _expiry_cutoff(days: int) -> str:
+    return (datetime.now(CAIRO).date() + timedelta(days=days)).isoformat()
 
 
 class AIItem(BaseModel):
@@ -217,13 +231,14 @@ class AITimelineEvent(BaseModel):
 @router.get(
     "/items",
     operation_id="search_inventory",
-    summary="Search this pharmacy's products by name, active ingredient or barcode",
+    summary="List or search this pharmacy's products. Leave search and category empty to list ALL products (alphabetical, up to limit 50, page with offset); or search by name, active ingredient or barcode, or filter by category",
     response_model=List[AIItem],
 )
 async def search_inventory(
-    search: Optional[str] = Query(default=None, max_length=100),
+    search: Optional[str] = Query(default=None, max_length=100, description="Optional. Leave empty to list all products."),
     category: Optional[str] = Query(default=None, max_length=100),
     limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0, le=1000, description="How many products to skip, to read the next page."),
     db: AsyncSession = Depends(get_db),
     ctx: dict = Depends(require_permission("view_inventory")),
 ):
@@ -238,14 +253,16 @@ async def search_inventory(
         ))
     if category and category.strip():
         query = query.where(InventoryItem.category == category.strip())
-    result = await db.execute(query.order_by(InventoryItem.name_ar, InventoryItem.id).limit(limit))
+    result = await db.execute(
+        query.order_by(InventoryItem.name_ar, InventoryItem.id).offset(offset).limit(limit)
+    )
     return result.scalars().all()
 
 
 @router.post(
     "/match",
     operation_id="match_product",
-    summary="Find one product by name, with close alternatives or suggestions",
+    summary="Find one product by a typed or spoken name; when none matches exactly it returns the closest products (typos, missing or swapped letters) as suggestions for the user to choose from",
     response_model=AIMatchResponse,
 )
 async def match_product(
@@ -269,17 +286,18 @@ async def match_product(
     if matches:
         return {"found": True, "matched_item": matches[0], "alternatives": matches[1:4]}
 
-    prefix = _like_pattern(query_str[:4])
-    fuzzy = await db.execute(
-        select(InventoryItem).where(
-            InventoryItem.pharmacy_id == pharmacy_id,
-            or_(
-                InventoryItem.name_ar.ilike(prefix, escape="\\"),
-                InventoryItem.name_en.ilike(prefix, escape="\\"),
-            ),
-        ).order_by(InventoryItem.name_ar, InventoryItem.id).limit(3)
+    # No name contains the text: rank every product of this pharmacy by closeness, so a
+    # typo anywhere in the name still finds the product. Only this pharmacy's rows are read.
+    everything = await db.execute(
+        select(InventoryItem).where(InventoryItem.pharmacy_id == pharmacy_id)
     )
-    return {"found": False, "suggestions": fuzzy.scalars().all()}
+    items = {item.id: item for item in everything.scalars().all()}
+    ranked = rank_matches(
+        query_str,
+        ((item.id, (item.name_ar, item.name_en)) for item in items.values()),
+        limit=5,
+    )
+    return {"found": False, "suggestions": [items[ident] for ident in ranked]}
 
 
 @router.get(
@@ -430,29 +448,6 @@ async def get_inventory_summary(
 
 
 @router.get(
-    "/low-stock",
-    operation_id="list_low_stock",
-    summary="Products at or below their minimum stock level, lowest first",
-    response_model=List[AIItem],
-)
-async def list_low_stock_items(
-    limit: int = Query(default=20, ge=1, le=50),
-    db: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_permission("view_inventory")),
-):
-    result = await db.execute(
-        select(InventoryItem)
-        .where(
-            InventoryItem.pharmacy_id == ctx["pharmacy_id"],
-            InventoryItem.stock_qty <= InventoryItem.min_threshold,
-        )
-        .order_by(InventoryItem.stock_qty, InventoryItem.id)
-        .limit(limit)
-    )
-    return result.scalars().all()
-
-
-@router.get(
     "/categories",
     operation_id="list_categories",
     summary="Product categories of this pharmacy with how many products each holds",
@@ -463,6 +458,81 @@ async def list_categories(
     ctx: dict = Depends(require_permission("view_inventory")),
 ):
     return await list_category_details(db=db, ctx=ctx)
+
+
+class AIPharmacySummary(BaseModel):
+    """A one-call overview. Each part appears only when this member's role may see it;
+    `omitted` names the parts left out. No cost of goods, no profit, no names."""
+    day: str
+    expiry_window_days: int
+    omitted: List[Literal["stock", "sales", "payables"]]
+    sales_scope: Optional[Literal["pharmacy", "own"]] = None
+    stock: Optional[AIInventorySummary] = None
+    low_stock_count: Optional[int] = None
+    out_of_stock_count: Optional[int] = None
+    expiring_count: Optional[int] = None
+    sales_today: Optional[AISummary] = None
+    payables: Optional[AIPayablesSummary] = None
+
+
+@router.get(
+    "/pharmacy-summary",
+    operation_id="get_pharmacy_summary",
+    summary="One-call overview of the pharmacy for today (Cairo day): stock totals, low, out-of-stock and expiring product counts, today's sales and expenses, and what is owed to suppliers; parts this role may not see are listed in omitted",
+    response_model=AIPharmacySummary,
+)
+async def get_pharmacy_summary(
+    expiring_within_days: int = Query(default=EXPIRY_WINDOW_DEFAULT_DAYS, ge=1, le=365),
+    db: AsyncSession = Depends(get_db),
+    ctx: dict = Depends(get_current_user),
+):
+    role, scopes = ctx["role"], ctx.get("scopes")
+    can_stock = has_permission(role, "view_inventory", scopes)
+    can_reports = has_permission(role, "view_reports", scopes)
+    if not (can_stock or can_reports):
+        raise HTTPException(status_code=403, detail="This role cannot view the pharmacy summary.")
+    pharmacy_id = ctx["pharmacy_id"]
+    is_cashier = role == "cashier"
+    out: dict = {
+        "day": datetime.now(CAIRO).date().isoformat(),
+        "expiry_window_days": expiring_within_days,
+        "omitted": [],
+    }
+
+    if can_stock:
+        out["stock"] = await inventory_summary(db=db, ctx=ctx)
+        counts = {}
+        for name, conditions in (
+            ("low_stock_count", [InventoryItem.stock_qty <= InventoryItem.min_threshold]),
+            ("out_of_stock_count", [InventoryItem.stock_qty <= 0]),
+            ("expiring_count", [
+                InventoryItem.stock_qty > 0,
+                InventoryItem.expiry_date.is_not(None),
+                InventoryItem.expiry_date != "",
+                InventoryItem.expiry_date <= _expiry_cutoff(expiring_within_days),
+            ]),
+        ):
+            result = await db.execute(
+                select(func.count(InventoryItem.id)).where(InventoryItem.pharmacy_id == pharmacy_id, *conditions)
+            )
+            counts[name] = int(result.scalar_one() or 0)
+        out.update(counts)
+    else:
+        out["omitted"].append("stock")
+
+    if can_reports:
+        # day=None is today's Cairo day (the same call chat.py makes); a cashier's totals
+        # are their own entries only, so the scope is reported.
+        out["sales_today"] = await get_daily_summary(day=None, start_day=None, end_day=None, db=db, ctx=ctx)
+        out["sales_scope"] = "own" if is_cashier else "pharmacy"
+        if is_cashier:
+            # What the pharmacy owes suppliers is not a cashier's business.
+            out["omitted"].append("payables")
+        else:
+            out["payables"] = await payables_summary(start_day=None, end_day=None, db=db, ctx=ctx)
+    else:
+        out["omitted"].extend(["sales", "payables"])
+    return out
 
 
 @router.get(
@@ -559,6 +629,7 @@ def _build(servers: list) -> FastAPI:
         redoc_url=None,
     )
     ai_app.include_router(router)
+    ai_app.include_router(propose_router, dependencies=[Depends(ai_rate_limit)])
     # Only this sub-app accepts the short-lived AI token (aud = "ai"). The main API
     # refuses it in get_current_identity, so a leaked AI token cannot reach /api.
     ai_app.dependency_overrides[get_current_identity] = get_current_identity_allow_ai

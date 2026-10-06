@@ -23,6 +23,14 @@ const TEST_TOKEN = 'test123';
 const MAX_CHARS = 12000;
 const TIMEOUT_MS = 10000;
 const out = (o) => JSON.stringify(o);
+// Token diagnostics (Session 125): a fingerprint (FNV-1a 32, 8 hex) and the length, never the token.
+// The server logs the same fingerprint for the token it sends and for the token it receives.
+const fp = (s) => {
+	let h = 0x811c9dc5;
+	s = String(s || '');
+	for (let i = 0; i < s.length; i++) { h ^= (s.charCodeAt(i) & 0xff); h = Math.imul(h, 0x01000193) >>> 0; }
+	return ('00000000' + h.toString(16)).slice(-8);
+};
 const split = (u) => {
 	const m = /^(https?:\/\/[^\/?#]+)(\/[^?#]*)?/i.exec(String(u || ''));
 	return m ? { origin: m[1].toLowerCase(), path: m[2] || '/' } : null;
@@ -74,7 +82,7 @@ try {
 			422: 'Invalid arguments. Fix them (days as YYYY-MM-DD, ids from a search result) and try once more.',
 			429: 'Too many requests. Tell the user to try again in a minute.',
 		}[status] || 'Request failed. Tell the user to try again later.';
-		return out({ ok: false, status, error: reason, tokenFrom });
+		return out({ ok: false, status, error: reason, tokenFrom, tokenLen: String(token).length, tokenFp: fp(token), tokenFormat: String(token).indexOf('rsh1.') === 0 ? 'rsh1' : 'not-rsh1', host: target.origin });
 	}
 
 	let parsed;

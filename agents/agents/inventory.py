@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+# agents/agents/inventory.py
 from agents.state import AgentState
 
 
